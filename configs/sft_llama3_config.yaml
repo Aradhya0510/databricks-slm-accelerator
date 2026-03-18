@@ -1,0 +1,74 @@
+model:
+  model_name: meta-llama/Llama-3.2-3B-Instruct
+  task_type: instruction_tuning
+  trust_remote_code: true
+
+  quantization: "4bit"
+  bnb_4bit_compute_dtype: bfloat16
+  bnb_4bit_quant_type: nf4
+  use_double_quant: true
+
+  use_peft: true
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+
+  max_new_tokens: 512
+  temperature: 0.7
+  top_p: 0.9
+
+data:
+  train_data_path: /Volumes/<catalog>/<schema>/<volume>/data/sft/train.jsonl
+  val_data_path: /Volumes/<catalog>/<schema>/<volume>/data/sft/val.jsonl
+  data_format: alpaca
+  max_seq_length: 2048
+  batch_size: 4
+  num_workers: 4
+  instruction_column: instruction
+  input_column: input
+  output_column: output
+  system_prompt: "You are a helpful AI assistant."
+
+training:
+  max_epochs: 3
+  learning_rate: 2e-4
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  lr_scheduler_type: cosine
+  gradient_accumulation_steps: 4
+  gradient_checkpointing: true
+  max_grad_norm: 1.0
+  bf16: true
+  packing: false
+  early_stopping_patience: 3
+  monitor_metric: eval_loss
+  monitor_mode: min
+  checkpoint_dir: /tmp/checkpoints/llama3_sft
+  volume_checkpoint_dir: /Volumes/<catalog>/<schema>/<volume>/checkpoints/llama3_sft
+  save_top_k: 3
+  log_every_n_steps: 10
+
+mlflow:
+  experiment_name: /Users/<your.email@databricks.com>/slm_llama3_sft
+  run_name: llama3_sft_run1
+  log_model: true
+  tags:
+    framework: trl
+    model_family: llama
+    task: instruction_tuning
+    method: qlora
+
+output:
+  results_dir: /Volumes/<catalog>/<schema>/<volume>/results/llama3_sft
+
+serving:
+  registered_model_name: <catalog>.<schema>.llama3_sft
+  endpoint_name: llama3-sft-endpoint
+  workload_size: Small
+  workload_type: GPU_SMALL
+  scale_to_zero: true
+
+monitoring:
+  drift_threshold: 0.1
+  error_rate_threshold: 0.05
+  latency_p95_threshold_ms: 2000

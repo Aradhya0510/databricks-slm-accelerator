@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Cursor / AI tooling
+.cursor/
+.ai-dev-kit/
+.claude/
+.mcp.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# MLflow
+mlruns/
+mlartifacts/
+
+# Checkpoints and model artifacts
+checkpoints/
+*.ckpt
+*.safetensors
+*.bin
+
+# Secrets / credentials
+.env
+*.pem
+credentials.json

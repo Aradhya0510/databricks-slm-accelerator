@@ -1,0 +1,71 @@
+model:
+  model_name: microsoft/Phi-3.5-mini-instruct
+  task_type: text_classification
+  trust_remote_code: true
+
+  quantization: "4bit"
+  bnb_4bit_compute_dtype: bfloat16
+  bnb_4bit_quant_type: nf4
+  use_double_quant: true
+
+  use_peft: true
+  lora_r: 8
+  lora_alpha: 16
+  lora_dropout: 0.1
+  num_labels: 5
+
+  max_new_tokens: 1
+  temperature: 0.0
+
+data:
+  train_data_path: /Volumes/<catalog>/<schema>/<volume>/data/classification/train.csv
+  val_data_path: /Volumes/<catalog>/<schema>/<volume>/data/classification/val.csv
+  data_format: csv
+  max_seq_length: 512
+  batch_size: 8
+  num_workers: 4
+  text_column: text
+  label_column: label
+
+training:
+  max_epochs: 5
+  learning_rate: 2e-4
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  lr_scheduler_type: cosine
+  gradient_accumulation_steps: 2
+  gradient_checkpointing: true
+  max_grad_norm: 1.0
+  bf16: true
+  early_stopping_patience: 3
+  monitor_metric: eval_accuracy
+  monitor_mode: max
+  checkpoint_dir: /tmp/checkpoints/phi3_classification
+  volume_checkpoint_dir: /Volumes/<catalog>/<schema>/<volume>/checkpoints/phi3_classification
+  save_top_k: 3
+  log_every_n_steps: 10
+
+mlflow:
+  experiment_name: /Users/<your.email@databricks.com>/slm_phi3_classification
+  run_name: phi3_classification_run1
+  log_model: true
+  tags:
+    framework: hf_trainer
+    model_family: phi-3
+    task: text_classification
+    method: qlora
+
+output:
+  results_dir: /Volumes/<catalog>/<schema>/<volume>/results/phi3_classification
+
+serving:
+  registered_model_name: <catalog>.<schema>.phi3_classification
+  endpoint_name: phi3-classification-endpoint
+  workload_size: Small
+  workload_type: GPU_SMALL
+  scale_to_zero: true
+
+monitoring:
+  drift_threshold: 0.1
+  error_rate_threshold: 0.05
+  latency_p95_threshold_ms: 500
