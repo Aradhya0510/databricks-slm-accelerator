@@ -15,10 +15,11 @@ A production-ready framework for fine-tuning **small language models** on Databr
 Any HuggingFace causal LM works out of the box. Pre-configured adapter configs for:
 
 - **Phi-3 / Phi-3.5** (Microsoft) — 3.8B, optimized for efficiency
-- **Llama 3.x** (Meta) — 1B, 3B, 8B
+- **Phi-4 / Phi-4-mini** (Microsoft) — 3.8B, latest-gen small model
+- **Llama 3.x** (Meta) — 1B, 3B, 8B (requires gated HF token)
 - **Mistral / Mixtral** (Mistral AI) — 7B
-- **Gemma 2** (Google) — 2B, 7B, 9B
-- **Qwen 2.5** (Alibaba) — 0.5B to 7B
+- **Gemma 2** (Google) — 2B, 7B, 9B (requires gated HF token)
+- **Qwen 2.5 / Qwen 3.5** (Alibaba) — 0.5B to 7B
 
 ## Quick Start
 
@@ -54,7 +55,7 @@ YAML Config → PipelineConfig (Pydantic v2) → TrainingEngine
                                                     └── TextClassificationTask (HF Trainer)
                                                     │
                                           Shared model/ package:
-                                                    ├── loader.py (quantization + model loading)
+                                                    ├── loader.py (resilient model loading)
                                                     ├── peft_utils.py (LoRA / QLoRA)
                                                     └── adapters.py (model family configs)
 ```
@@ -73,6 +74,10 @@ YAML Config → PipelineConfig (Pydantic v2) → TrainingEngine
 
 6. **Databricks-native** — Unity Catalog Volumes for data/checkpoints, MLflow 3.x for tracking, Model Serving for deployment, system tables for monitoring.
 
+7. **Resilient model loading** — Both causal-LM and sequence-classification loaders automatically fall back from `trust_remote_code=True` to native transformers classes when a model's custom code raises `ValueError` or `ImportError`. For classification, the score layer is reinitialised when a model's remote code ignores the `num_labels` argument.
+
+8. **Pre-formatted SFT datasets** — Instruction-tuning datasets are converted to chat-templated strings via `dataset.map()` before being passed to `SFTTrainer`, ensuring compatibility across TRL versions and avoiding internal formatting-function pitfalls.
+
 ## Project Structure
 
 ```
@@ -82,7 +87,7 @@ YAML Config → PipelineConfig (Pydantic v2) → TrainingEngine
 │   ├── model/
 │   │   ├── loader.py              # Model + tokenizer loading with quantization
 │   │   ├── peft_utils.py          # LoRA/QLoRA configuration and application
-│   │   └── adapters.py            # Model family configs (Phi-3, Llama, Mistral, etc.)
+│   │   └── adapters.py            # Model family configs (Phi-3, Phi-4, Llama, etc.)
 │   ├── engine/
 │   │   ├── engine.py              # TrainingEngine orchestrator
 │   │   └── callbacks.py           # VolumeCheckpoint, EarlyStopping
@@ -98,14 +103,15 @@ YAML Config → PipelineConfig (Pydantic v2) → TrainingEngine
 ├── notebooks/                     # Interactive Databricks notebooks (01-05)
 ├── configs/                       # YAML configs per model/task
 ├── requirements.txt               # Dev dependencies
-└── requirements_runtime.txt       # Runtime dependencies
+└── requirements_runtime.txt       # Databricks runtime dependencies (trl, peft, bitsandbytes)
 ```
 
 ## Requirements
 
-- **Databricks Runtime**: 16.4+ ML or 17.3 LTS ML
-- **GPU**: A10G, A100, or H100 (single or multi-GPU)
-- **Python**: 3.10+
+- **Databricks Runtime**: DBR 17.3 LTS ML GPU or later (Spark 4.0, Python 3.12)
+- **GPU**: A10G (g5.4xlarge), A100, or H100 — single or multi-GPU
+- **Pre-installed by DBR ML**: `transformers`, `accelerate`, `datasets`, `sentencepiece`, `protobuf`, `pydantic`, `torch`, `flash-attn`, `deepspeed`, `mlflow`
+- **Installed at runtime**: `trl>=0.12`, `peft>=0.10`, `bitsandbytes>=0.43` (see `requirements_runtime.txt`)
 
 ## Data Formats
 
@@ -131,13 +137,30 @@ text,label
 "Terrible experience.",negative
 ```
 
+## Tested Combinations
+
+The framework has been validated across the following task/model/data-format matrix on DBR 17.3 LTS ML GPU (`g5.4xlarge`, A10G):
+
+| Task Type | Model | Data Format |
+|-----------|-------|-------------|
+| text_classification | Phi-3.5-mini-instruct | CSV |
+| instruction_tuning | Phi-3.5-mini-instruct | Alpaca |
+| instruction_tuning | Phi-3.5-mini-instruct | ShareGPT |
+| dpo | Phi-3.5-mini-instruct | Preference |
+| instruction_tuning | Phi-4-mini-instruct | Alpaca |
+| text_classification | Phi-4-mini-instruct | CSV |
+| instruction_tuning | Qwen3.5-4B | Alpaca |
+| text_classification | Qwen3.5-4B | CSV |
+
+A reusable Databricks Job (`slm-sanity-suite`) runs these as a regression suite. The configs and synthetic data live in the Databricks workspace (not in this repo).
+
 ## Adding a New Task
 
 1. Create `src/tasks/your_task/__init__.py`
 2. Implement the `BaseTask` interface
 3. Decorate with `@TaskRegistry.register("your_task")`
-4. Import in `src/engine/engine.py`
+4. Add a lazy import entry in `src/engine/engine.py`
 
 ## Adding a New Model Family
 
-Add an entry to `_FAMILY_CONFIGS` in `src/model/adapters.py` with the model's LoRA target modules, padding side, and special token behavior.
+Add an entry to `_FAMILY_CONFIGS` in `src/model/adapters.py` with the model's LoRA target modules, padding side, and special token behavior. The `detect_model_family()` function matches model names by substring, so also add a pattern entry if the model name doesn't match an existing family.

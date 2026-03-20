@@ -39,6 +39,13 @@ checkpoints/
 *.safetensors
 *.bin
 
+# Dev-only directories (sanity test data, workspace upload staging)
+_sanity_check/
+_upload_staging/
+
+# Sanity suite configs (workspace-specific paths, not for end users)
+configs/sanity_*
+
 # Secrets / credentials
 .env
 *.pem
