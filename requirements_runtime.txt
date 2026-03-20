@@ -1,8 +1,10 @@
-transformers>=4.40
+# ---------------------------------------------------------------------------
+# Runtime dependencies for Databricks GPU ML clusters (DBR 17.3 LTS ML+)
+#
+# The following are pre-installed in DBR ML and should NOT be listed here:
+#   transformers, accelerate, datasets, sentencepiece, protobuf, pydantic,
+#   torch, flash-attn, deepspeed, mlflow-skinny
+# ---------------------------------------------------------------------------
 trl>=0.12
 peft>=0.10
 bitsandbytes>=0.43
-accelerate>=0.28
-datasets>=2.18
-sentencepiece>=0.2
-protobuf>=3.20

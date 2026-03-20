@@ -89,7 +89,6 @@ def load_model_for_causal_lm(
     bnb_config = _build_bnb_config(model_cfg)
     kwargs = {
         "pretrained_model_name_or_path": model_cfg.model_name,
-        "trust_remote_code": model_cfg.trust_remote_code,
         "device_map": "auto" if bnb_config else None,
         "attn_implementation": "flash_attention_2" if torch.cuda.is_available() else None,
     }
@@ -98,7 +97,19 @@ def load_model_for_causal_lm(
     else:
         kwargs["torch_dtype"] = torch.bfloat16 if torch.cuda.is_available() else torch.float32
 
-    model = AutoModelForCausalLM.from_pretrained(**kwargs)
+    for trust_rc in ([True, False] if model_cfg.trust_remote_code else [False]):
+        try:
+            model = AutoModelForCausalLM.from_pretrained(
+                trust_remote_code=trust_rc, **kwargs,
+            )
+            break
+        except (ValueError, ImportError):
+            if not trust_rc:
+                raise
+            print(
+                "Warning: AutoModelForCausalLM failed with "
+                "trust_remote_code=True, retrying with native config..."
+            )
 
     if tokenizer and len(tokenizer) > model.config.vocab_size:
         model.resize_token_embeddings(len(tokenizer))
@@ -110,20 +121,75 @@ def load_model_for_sequence_classification(
     model_cfg: ModelConfig,
     tokenizer: PreTrainedTokenizer | None = None,
 ) -> PreTrainedModel:
-    """Load a sequence classification model with optional quantization."""
+    """Load a sequence classification model with optional quantization.
+
+    AutoModelForSequenceClassification does not recognise custom remote-code
+    config classes (e.g. Phi-3.5's custom Phi3Config).  We first try with the
+    caller's trust_remote_code setting; on failure we retry with it disabled so
+    the native transformers Phi3Config (which IS registered) is used instead.
+    """
     bnb_config = _build_bnb_config(model_cfg)
+
+    # Use {"": 0} instead of "auto" so newly-initialised layers (the
+    # classification head) land on the same GPU as the quantised backbone.
+    if bnb_config and torch.cuda.is_available():
+        device_map = {"": 0}
+    else:
+        device_map = None
+
     kwargs = {
         "pretrained_model_name_or_path": model_cfg.model_name,
         "num_labels": model_cfg.num_labels,
-        "trust_remote_code": model_cfg.trust_remote_code,
-        "device_map": "auto" if bnb_config else None,
+        "device_map": device_map,
     }
     if bnb_config:
         kwargs["quantization_config"] = bnb_config
     else:
         kwargs["torch_dtype"] = torch.bfloat16 if torch.cuda.is_available() else torch.float32
 
-    model = AutoModelForSequenceClassification.from_pretrained(**kwargs)
+    for trust_rc in ([True, False] if model_cfg.trust_remote_code else [False]):
+        try:
+            model = AutoModelForSequenceClassification.from_pretrained(
+                trust_remote_code=trust_rc,
+                ignore_mismatched_sizes=True,
+                **kwargs,
+            )
+            break
+        except (ValueError, ImportError):
+            if not trust_rc:
+                raise
+            print(
+                "Warning: AutoModelForSequenceClassification failed with "
+                "trust_remote_code=True, retrying with native config..."
+            )
+
+    # Ensure the classification head has the correct output dimension.
+    # Some models (e.g. Qwen3.5 VL variants) ignore the num_labels kwarg
+    # in their remote-code __init__, so the score layer ends up with the
+    # wrong out_features.  Reinitialise when this happens.
+    if hasattr(model, "score"):
+        expected = model_cfg.num_labels
+        actual = model.score.out_features if hasattr(model.score, "out_features") else None
+        if actual is not None and actual != expected:
+            import torch.nn as nn
+            device = next(model.parameters()).device
+            dtype = next(model.parameters()).dtype
+            model.score = nn.Linear(
+                model.score.in_features, expected, bias=False,
+            ).to(device=device, dtype=dtype)
+            model.config.num_labels = expected
+        elif hasattr(model.config, "num_labels") and model.config.num_labels != expected:
+            model.config.num_labels = expected
+
+    # With BitsAndBytes quantization, registered buffers (e.g. rotary
+    # embedding inv_freq) can end up on CPU even when device_map puts
+    # parameters on GPU.  Move any stray CPU buffers to the target device.
+    if bnb_config and torch.cuda.is_available():
+        target = torch.device("cuda:0")
+        for module in model.modules():
+            for name, buf in module.named_buffers(recurse=False):
+                if buf is not None and buf.device.type == "cpu":
+                    module.register_buffer(name, buf.to(target))
 
     if tokenizer and len(tokenizer) > model.config.vocab_size:
         model.resize_token_embeddings(len(tokenizer))

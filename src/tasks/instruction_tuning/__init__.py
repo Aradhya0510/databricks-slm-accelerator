@@ -54,6 +54,15 @@ class InstructionTuningTask(BaseTask):
             split = train_ds.train_test_split(test_size=config.data.val_split_ratio, seed=42)
             train_ds, val_ds = split["train"], split["test"]
 
+        formatting_fn = build_formatting_fn(config.data, tokenizer)
+        if formatting_fn is not None:
+            def _apply(examples):
+                return {"text": formatting_fn(examples)}
+
+            train_ds = train_ds.map(_apply, batched=True, remove_columns=train_ds.column_names)
+            if val_ds is not None:
+                val_ds = val_ds.map(_apply, batched=True, remove_columns=val_ds.column_names)
+
         return train_ds, val_ds
 
     # ------------------------------------------------------------------
@@ -68,8 +77,6 @@ class InstructionTuningTask(BaseTask):
         config: PipelineConfig,
         callbacks: list | None = None,
     ) -> Trainer:
-        formatting_fn = build_formatting_fn(config.data, tokenizer)
-
         sft_config = SFTConfig(
             output_dir=config.training.checkpoint_dir,
             num_train_epochs=config.training.max_epochs,
@@ -85,9 +92,9 @@ class InstructionTuningTask(BaseTask):
             max_grad_norm=config.training.max_grad_norm,
             bf16=config.training.bf16,
             fp16=config.training.fp16,
-            max_seq_length=config.data.max_seq_length,
+            max_length=config.data.max_seq_length,
             packing=config.training.packing,
-            dataset_text_field="text" if not formatting_fn else None,
+            dataset_text_field="text",
             eval_strategy="epoch" if val_dataset else "no",
             save_strategy="epoch",
             logging_steps=config.training.log_every_n_steps,
@@ -108,7 +115,6 @@ class InstructionTuningTask(BaseTask):
             train_dataset=train_dataset,
             eval_dataset=val_dataset,
             processing_class=tokenizer,
-            formatting_func=formatting_fn,
             callbacks=callbacks or [],
         )
 

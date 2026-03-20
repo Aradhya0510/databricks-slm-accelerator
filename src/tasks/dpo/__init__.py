@@ -85,7 +85,6 @@ class DPOTask(BaseTask):
             beta=config.training.dpo_beta,
             loss_type=config.training.dpo_loss_type,
             max_length=config.data.max_seq_length,
-            max_prompt_length=config.data.max_seq_length // 2,
             eval_strategy="epoch" if val_dataset else "no",
             save_strategy="epoch",
             logging_steps=config.training.log_every_n_steps,

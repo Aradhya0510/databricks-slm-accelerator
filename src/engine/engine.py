@@ -51,12 +51,22 @@ class TrainingEngine:
     def _train_fn(self, num_gpus: int = 1) -> Dict[str, Any]:
         config = self.config
 
-        # --- ensure tasks are registered ---
-        import src.tasks.instruction_tuning  # noqa: F401
-        import src.tasks.dpo  # noqa: F401
-        import src.tasks.text_classification  # noqa: F401
+        # --- lazily import only the required task to avoid pulling heavy
+        # dependencies (e.g. trl for DPO) when they are not needed ---
+        _task_modules = {
+            "instruction_tuning": "src.tasks.instruction_tuning",
+            "dpo": "src.tasks.dpo",
+            "text_classification": "src.tasks.text_classification",
+        }
+        import importlib
+        task_type = config.model.task_type
+        if task_type in _task_modules:
+            importlib.import_module(_task_modules[task_type])
+        else:
+            for mod in _task_modules.values():
+                importlib.import_module(mod)
 
-        task = TaskRegistry.get(config.model.task_type)
+        task = TaskRegistry.get(task_type)
 
         # --- model + tokenizer (quantization + PEFT applied inside task) ---
         model, tokenizer = task.load_model_and_tokenizer(config)
@@ -107,7 +117,21 @@ class TrainingEngine:
         # --- final eval ---
         metrics = {}
         if val_ds is not None:
-            metrics = trainer.evaluate()
+            try:
+                metrics = trainer.evaluate()
+            except RuntimeError:
+                # Databricks notebook env injects NotebookProgressCallback
+                # which fails on standalone evaluate() after train().
+                # Remove it and retry.
+                try:
+                    from transformers.utils.notebook import NotebookProgressCallback
+                    trainer.remove_callback(NotebookProgressCallback)
+                    metrics = trainer.evaluate()
+                except Exception:
+                    metrics = {
+                        k: v for k, v in (trainer.state.log_history[-1] if trainer.state.log_history else {}).items()
+                        if k.startswith("eval_")
+                    }
 
         # --- log final model (rank 0 only) ---
         try:

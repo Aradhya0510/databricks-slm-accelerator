@@ -37,6 +37,8 @@ class TextClassificationTask(BaseTask):
     def load_model_and_tokenizer(
         self, config: PipelineConfig,
     ) -> Tuple[PreTrainedModel, PreTrainedTokenizer]:
+        import torch
+
         model, tokenizer = load_model_and_tokenizer(
             config.model, for_classification=True,
         )
@@ -45,6 +47,28 @@ class TextClassificationTask(BaseTask):
             model = apply_peft(
                 model, config.model, task_type=TaskType.SEQ_CLS,
             )
+
+        # BitsAndBytes quantisation can leave non-parameter tensors
+        # (rotary embedding inv_freq, cos/sin caches) on CPU.  Move all
+        # stray CPU buffers and plain tensor attributes to GPU.
+        if config.model.quantization != "none" and torch.cuda.is_available():
+            target = torch.device("cuda:0")
+            for module in model.modules():
+                # registered buffers (including persistent=False)
+                if hasattr(module, "_buffers"):
+                    for key, buf in module._buffers.items():
+                        if buf is not None and buf.device.type == "cpu":
+                            module._buffers[key] = buf.to(target)
+                # plain tensor attributes not registered as buffers
+                for attr in list(vars(module).keys()):
+                    if attr.startswith("_"):
+                        continue
+                    obj = getattr(module, attr, None)
+                    if isinstance(obj, torch.Tensor) and obj.device.type == "cpu":
+                        try:
+                            setattr(module, attr, obj.to(target))
+                        except Exception:
+                            pass
 
         return model, tokenizer
 
@@ -89,6 +113,7 @@ class TextClassificationTask(BaseTask):
             per_device_eval_batch_size=config.data.batch_size,
             gradient_accumulation_steps=config.training.gradient_accumulation_steps,
             gradient_checkpointing=config.training.gradient_checkpointing,
+            gradient_checkpointing_kwargs={"use_reentrant": False},
             learning_rate=config.training.learning_rate,
             weight_decay=config.training.weight_decay,
             warmup_ratio=config.training.warmup_ratio,
