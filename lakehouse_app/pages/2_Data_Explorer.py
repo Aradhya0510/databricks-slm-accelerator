@@ -11,11 +11,13 @@ from utils.state_manager import StateManager
 inject_theme()
 StateManager.initialize()
 
-page_header("Data Explorer", "Preview training data, check formatting, and analyze token distributions")
+page_header(
+    "Data Explorer",
+    "Preview training data, check formatting, and analyze token distributions",
+)
 
 
 def _try_load_data(path: str) -> pd.DataFrame:
-    """Attempt to load data from a local or /Volumes path."""
     if not path:
         return pd.DataFrame()
     try:
@@ -57,7 +59,8 @@ with tab_preview:
         with c2:
             metric_card("Columns", str(len(df.columns)))
         with c3:
-            metric_card("Format", data_path.rsplit(".", 1)[-1].upper() if data_path else "—")
+            fmt = data_path.rsplit(".", 1)[-1].upper() if data_path else "—"
+            metric_card("Format", fmt)
 
         section_title("Sample Records")
         n = st.slider("Rows to display", 5, min(50, len(df)), 10)
@@ -66,13 +69,23 @@ with tab_preview:
         section_title("Column Details")
         for col in df.columns:
             with st.expander(f"Column: `{col}`"):
-                st.write(f"**Dtype:** {df[col].dtype}")
-                st.write(f"**Non-null:** {df[col].notna().sum()} / {len(df)}")
+                st.markdown(f"**Dtype:** {df[col].dtype}")
+                st.markdown(f"**Non-null:** {df[col].notna().sum()} / {len(df)}")
                 if df[col].dtype == "object":
                     lengths = df[col].dropna().astype(str).str.len()
-                    st.write(f"**Avg length:** {lengths.mean():.0f} chars")
-                    st.write(f"**Max length:** {lengths.max()} chars")
-                    st.text_area("Example value", value=str(df[col].dropna().iloc[0])[:500] if len(df[col].dropna()) > 0 else "", height=100, key=f"sample_{col}")
+                    st.markdown(f"**Avg length:** {lengths.mean():.0f} chars")
+                    st.markdown(f"**Max length:** {lengths.max()} chars")
+                    sample = (
+                        str(df[col].dropna().iloc[0])[:500]
+                        if len(df[col].dropna()) > 0
+                        else ""
+                    )
+                    st.text_area(
+                        "Example value",
+                        value=sample,
+                        height=100,
+                        key=f"sample_{col}",
+                    )
 
 with tab_stats:
     df = st.session_state.get("explorer_df", pd.DataFrame())
@@ -86,25 +99,30 @@ with tab_stats:
         if text_cols:
             selected_col = st.selectbox("Text column", text_cols)
             lengths = df[selected_col].dropna().astype(str).str.len() / 4
+
             import plotly.express as px
-            fig = px.histogram(lengths, nbins=50, title=f"Token length distribution — {selected_col}")
+
+            fig = px.histogram(
+                lengths,
+                nbins=50,
+                title=f"Token length distribution — {selected_col}",
+            )
             fig.update_layout(
                 xaxis_title="Estimated tokens",
                 yaxis_title="Count",
                 template="plotly_dark",
                 paper_bgcolor="rgba(0,0,0,0)",
                 plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(family="Figtree, sans-serif", color="#8A91A8"),
             )
             st.plotly_chart(fig, use_container_width=True)
 
-            c1, c2, c3, c4 = st.columns(4)
+            c1, c2, c3 = st.columns(3)
             with c1:
                 metric_card("Mean", f"{lengths.mean():.0f}")
             with c2:
                 metric_card("Median", f"{lengths.median():.0f}")
             with c3:
                 metric_card("P95", f"{lengths.quantile(0.95):.0f}")
-            with c4:
-                metric_card("Max", f"{lengths.max():.0f}")
         else:
             st.info("No text columns found in the dataset.")

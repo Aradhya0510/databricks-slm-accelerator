@@ -1,14 +1,27 @@
-"""Metrics display components for SLM training results."""
+"""Metrics display components following the ML Accelerator Design System."""
 
 import streamlit as st
 from typing import Any, Dict, List, Optional
 
+from components.theme import (
+    metric_card,
+    status_badge,
+    section_title,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
+    TEXT_TERTIARY,
+    BG_SURFACE,
+    BG_RAISED,
+    BORDER_SUBTLE,
+)
+
 
 class MetricsDisplay:
-    """Reusable metric display components."""
+    """Reusable metric and model display components."""
 
     @staticmethod
-    def display_metrics_grid(metrics: Dict[str, float], columns: int = 4):
+    def display_metrics_grid(metrics: Dict[str, float], columns: int = 3):
+        """Render a row of st.metric() cards — always 3 per row by default."""
         cols = st.columns(columns)
         for i, (key, value) in enumerate(metrics.items()):
             with cols[i % columns]:
@@ -20,31 +33,44 @@ class MetricsDisplay:
 
     @staticmethod
     def display_training_summary(run_info: Dict[str, Any]):
+        """Render a training-run summary card."""
+        rows = [
+            ("Run ID", run_info.get("run_id", "N/A")),
+            ("Status", run_info.get("status", "N/A")),
+            ("Duration", run_info.get("duration", "N/A")),
+        ]
+        detail_rows = "".join(
+            f'<div class="detail-row">'
+            f'<span class="detail-label">{label}</span>'
+            f'<span class="detail-value">{value}</span>'
+            f"</div>"
+            for label, value in rows
+        )
         st.markdown(
-            f'<div class="glass-card">'
-            f'<strong style="color:#E6EDF3;">Training Summary</strong>'
-            f'<div style="margin-top:0.8rem;">'
-            f'<div style="display:flex;justify-content:space-between;padding:0.3rem 0;border-bottom:1px solid rgba(139,148,158,0.1);">'
-            f'<span style="color:#8B949E;">Run ID</span>'
-            f'<span style="color:#E6EDF3;font-weight:500;">{run_info.get("run_id", "N/A")}</span></div>'
-            f'<div style="display:flex;justify-content:space-between;padding:0.3rem 0;border-bottom:1px solid rgba(139,148,158,0.1);">'
-            f'<span style="color:#8B949E;">Status</span>'
-            f'<span style="color:#E6EDF3;font-weight:500;">{run_info.get("status", "N/A")}</span></div>'
-            f'<div style="display:flex;justify-content:space-between;padding:0.3rem 0;">'
-            f'<span style="color:#8B949E;">Duration</span>'
-            f'<span style="color:#E6EDF3;font-weight:500;">{run_info.get("duration", "N/A")}</span></div>'
-            f'</div></div>',
+            f'<div class="ds-detail-card">'
+            f'<div class="detail-name">Training Summary</div>'
+            f"{detail_rows}"
+            f"</div>",
             unsafe_allow_html=True,
         )
 
     @staticmethod
     def display_model_card(model_info: Dict[str, Any]):
+        """Render a model info card."""
+        name = model_info.get("name", "Model")
+        task = model_info.get("task", "N/A")
+        version = model_info.get("version", "N/A")
         st.markdown(
-            f'<div class="glass-card">'
-            f'<strong style="color:#E6EDF3;">{model_info.get("name", "Model")}</strong>'
-            f'<div style="margin-top:0.6rem;font-size:0.88rem;">'
-            f'<div style="color:#8B949E;">Task: {model_info.get("task", "N/A")}</div>'
-            f'<div style="color:#8B949E;">Version: {model_info.get("version", "N/A")}</div>'
-            f'</div></div>',
+            f'<div class="ds-detail-card">'
+            f'<div class="detail-name">{name}</div>'
+            f'<div class="detail-row">'
+            f'<span class="detail-label">Task</span>'
+            f'<span class="detail-value">{task}</span>'
+            f"</div>"
+            f'<div class="detail-row">'
+            f'<span class="detail-label">Version</span>'
+            f'<span class="detail-value">{version}</span>'
+            f"</div>"
+            f"</div>",
             unsafe_allow_html=True,
         )

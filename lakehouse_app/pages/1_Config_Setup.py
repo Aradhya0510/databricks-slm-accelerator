@@ -1,7 +1,7 @@
 """Config Setup — Build and manage YAML configurations for SLM fine-tuning."""
 
 import streamlit as st
-from components.theme import inject_theme, page_header, section_title
+from components.theme import inject_theme, page_header, section_title, status_badge
 from components.config_forms import ConfigFormBuilder
 from utils.config_generator import ConfigGenerator
 from utils.state_manager import StateManager
@@ -33,7 +33,7 @@ with tab_build:
     section_title("Output")
     output_config = ConfigFormBuilder.output_config_form()
 
-    st.markdown("")
+    st.markdown('<div style="height:16px;"></div>', unsafe_allow_html=True)
     if st.button("Generate Configuration", type="primary", use_container_width=True):
         config = ConfigGenerator.generate_config(
             task=task,
@@ -53,9 +53,11 @@ with tab_build:
             st.success("Configuration generated and saved to session.")
             st.code(ConfigGenerator.get_config_preview(config), language="yaml")
 
-    st.markdown("")
     section_title("Save to File")
-    save_path = st.text_input("Save Path", value="/Volumes/<catalog>/<schema>/<volume>/configs/my_config.yaml")
+    save_path = st.text_input(
+        "Save Path",
+        value="/Volumes/<catalog>/<schema>/<volume>/configs/my_config.yaml",
+    )
     if st.button("Save Config", use_container_width=True):
         config = StateManager.get_current_config()
         if config:
@@ -89,7 +91,7 @@ with tab_load:
     if recent:
         for path in recent:
             c1, c2 = st.columns([4, 1])
-            c1.text(path)
+            c1.code(path)
             if c2.button("Load", key=f"recent_{path}"):
                 try:
                     config = ConfigGenerator.load_config(path)

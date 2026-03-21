@@ -22,18 +22,25 @@ class ConfigGenerator:
             {"name": "google/gemma-2-9b-it", "display": "Gemma 2 9B IT", "family": "gemma", "params": "9B"},
             {"name": "Qwen/Qwen2.5-3B-Instruct", "display": "Qwen 2.5 3B Instruct", "family": "qwen", "params": "3B"},
             {"name": "Qwen/Qwen2.5-7B-Instruct", "display": "Qwen 2.5 7B Instruct", "family": "qwen", "params": "7B"},
+            {"name": "Qwen/Qwen3.5-4B", "display": "Qwen 3.5 4B", "family": "qwen", "params": "4B"},
         ],
         "dpo": [
             {"name": "microsoft/Phi-3.5-mini-instruct", "display": "Phi-3.5 Mini Instruct", "family": "phi-3", "params": "3.8B"},
+            {"name": "microsoft/Phi-4-mini-instruct", "display": "Phi-4 Mini Instruct", "family": "phi-4", "params": "3.8B"},
             {"name": "meta-llama/Llama-3.2-3B-Instruct", "display": "Llama 3.2 3B Instruct", "family": "llama", "params": "3B"},
             {"name": "meta-llama/Llama-3.1-8B-Instruct", "display": "Llama 3.1 8B Instruct", "family": "llama", "params": "8B"},
             {"name": "mistralai/Mistral-7B-Instruct-v0.3", "display": "Mistral 7B Instruct v0.3", "family": "mistral", "params": "7B"},
+            {"name": "Qwen/Qwen2.5-3B-Instruct", "display": "Qwen 2.5 3B Instruct", "family": "qwen", "params": "3B"},
+            {"name": "Qwen/Qwen3.5-4B", "display": "Qwen 3.5 4B", "family": "qwen", "params": "4B"},
         ],
         "text_classification": [
             {"name": "microsoft/Phi-3.5-mini-instruct", "display": "Phi-3.5 Mini Instruct", "family": "phi-3", "params": "3.8B"},
+            {"name": "microsoft/Phi-4-mini-instruct", "display": "Phi-4 Mini Instruct", "family": "phi-4", "params": "3.8B"},
             {"name": "meta-llama/Llama-3.2-1B-Instruct", "display": "Llama 3.2 1B Instruct", "family": "llama", "params": "1B"},
             {"name": "meta-llama/Llama-3.2-3B-Instruct", "display": "Llama 3.2 3B Instruct", "family": "llama", "params": "3B"},
             {"name": "google/gemma-2-2b-it", "display": "Gemma 2 2B IT", "family": "gemma", "params": "2B"},
+            {"name": "Qwen/Qwen2.5-3B-Instruct", "display": "Qwen 2.5 3B Instruct", "family": "qwen", "params": "3B"},
+            {"name": "Qwen/Qwen3.5-4B", "display": "Qwen 3.5 4B", "family": "qwen", "params": "4B"},
         ],
     }
 

@@ -3,7 +3,7 @@
 import json
 import streamlit as st
 
-from components.theme import inject_theme, page_header, section_title
+from components.theme import inject_theme, page_header, section_title, metric_card
 from utils.state_manager import StateManager
 from utils.databricks_client import DatabricksJobClient
 
@@ -11,6 +11,18 @@ inject_theme()
 StateManager.initialize()
 
 page_header("Inference", "Test deployed models with interactive text prompts")
+
+# ── Three metric cards at top ──────────────────────────────────────────────────
+endpoints = StateManager.get("endpoints", [])
+inference_history = st.session_state.get("inference_count", 0)
+
+c1, c2, c3 = st.columns(3)
+with c1:
+    metric_card("Available Endpoints", str(len(endpoints)))
+with c2:
+    metric_card("Queries This Session", str(inference_history))
+with c3:
+    metric_card("Mode", "Interactive")
 
 
 @st.cache_resource
@@ -22,7 +34,6 @@ tab_single, tab_batch = st.tabs(["Single Prompt", "Batch"])
 
 with tab_single:
     section_title("Endpoint")
-    endpoints = StateManager.get("endpoints", [])
     endpoint_options = [ep.get("endpoint_name", "") for ep in endpoints] if endpoints else []
     if endpoint_options:
         endpoint_name = st.selectbox("Select Endpoint", options=endpoint_options)
@@ -30,15 +41,28 @@ with tab_single:
         endpoint_name = st.text_input("Endpoint Name", value="")
 
     section_title("Prompt")
-    system_prompt = st.text_area("System Prompt (optional)", value="You are a helpful assistant.", height=60)
-    user_prompt = st.text_area("User Prompt", value="", height=150, placeholder="Ask the model something...")
+    system_prompt = st.text_area(
+        "System Prompt (optional)",
+        value="You are a helpful assistant.",
+        height=60,
+    )
+    user_prompt = st.text_area(
+        "User Prompt",
+        value="",
+        height=150,
+        placeholder="Ask the model something...",
+    )
 
     with st.expander("Generation Parameters"):
         c1, c2, c3 = st.columns(3)
         with c1:
-            max_tokens = st.number_input("Max Tokens", min_value=1, max_value=4096, value=512)
+            max_tokens = st.number_input(
+                "Max Tokens", min_value=1, max_value=4096, value=512
+            )
         with c2:
-            temperature = st.slider("Temperature", 0.0, 2.0, value=0.7, step=0.1)
+            temperature = st.slider(
+                "Temperature", 0.0, 2.0, value=0.7, step=0.1
+            )
         with c3:
             top_p = st.slider("Top P", 0.0, 1.0, value=0.9, step=0.05)
 
@@ -48,37 +72,57 @@ with tab_single:
         elif not user_prompt:
             st.error("User prompt is required.")
         else:
-            with st.spinner("Generating..."):
+            with st.status("Generating response...", expanded=True) as gen_status:
                 try:
+                    st.write(f"Querying `{endpoint_name}`...")
                     client = _get_client()
                     prompt_text = user_prompt
                     if system_prompt:
-                        prompt_text = f"<|system|>\n{system_prompt}\n<|user|>\n{user_prompt}\n<|assistant|>"
+                        prompt_text = (
+                            f"<|system|>\n{system_prompt}\n"
+                            f"<|user|>\n{user_prompt}\n<|assistant|>"
+                        )
 
                     result = client.query_endpoint(endpoint_name, prompt_text)
                     if "error" in result:
+                        gen_status.update(label="Query failed", state="error")
                         st.error(result["error"])
                     else:
-                        section_title("Response")
                         predictions = result.get("predictions", result)
                         if isinstance(predictions, list) and len(predictions) > 0:
-                            response_text = predictions[0] if isinstance(predictions[0], str) else json.dumps(predictions[0], indent=2)
+                            response_text = (
+                                predictions[0]
+                                if isinstance(predictions[0], str)
+                                else json.dumps(predictions[0], indent=2)
+                            )
                         elif isinstance(predictions, dict):
                             response_text = json.dumps(predictions, indent=2)
                         else:
                             response_text = str(predictions)
+
+                        gen_status.update(label="Response received", state="complete")
+                        st.session_state["inference_count"] = inference_history + 1
+
+                        section_title("Response")
                         st.markdown(
-                            f'<div class="glass-card"><pre style="color:#E6EDF3;white-space:pre-wrap;">{response_text}</pre></div>',
+                            f'<div class="ds-code-block">'
+                            f'<pre style="margin:0;white-space:pre-wrap;color:#EDF0F7;">'
+                            f"{response_text}</pre></div>",
                             unsafe_allow_html=True,
                         )
                 except Exception as e:
+                    gen_status.update(label="Inference failed", state="error")
                     st.error(f"Inference failed: {e}")
 
 with tab_batch:
     section_title("Batch Inference")
     st.info("Upload a JSONL file with one prompt per line to run batch inference.")
 
-    endpoint_name_batch = st.text_input("Endpoint Name", value=endpoint_name if endpoint_name else "", key="batch_ep")
+    endpoint_name_batch = st.text_input(
+        "Endpoint Name",
+        value=endpoint_name if endpoint_name else "",
+        key="batch_ep",
+    )
     uploaded = st.file_uploader("Upload JSONL", type=["jsonl"])
 
     if uploaded and st.button("Run Batch", type="primary"):
@@ -90,18 +134,29 @@ with tab_batch:
             for line in lines:
                 try:
                     record = json.loads(line)
-                    prompts.append(record.get("prompt", record.get("text", line)))
+                    prompts.append(
+                        record.get("prompt", record.get("text", line))
+                    )
                 except json.JSONDecodeError:
                     prompts.append(line)
 
             results = []
-            progress = st.progress(0)
+            progress = st.progress(0, text="Processing batch...")
             client = _get_client()
             for i, prompt in enumerate(prompts):
                 resp = client.query_endpoint(endpoint_name_batch, prompt)
-                results.append({"prompt": prompt[:100], "response": str(resp.get("predictions", resp.get("error", "")))[:200]})
-                progress.progress((i + 1) / len(prompts))
+                results.append(
+                    {
+                        "prompt": prompt[:100],
+                        "response": str(
+                            resp.get("predictions", resp.get("error", ""))
+                        )[:200],
+                    }
+                )
+                pct = (i + 1) / len(prompts)
+                progress.progress(pct, text=f"Processed {i + 1}/{len(prompts)}")
 
             import pandas as pd
+
             df = pd.DataFrame(results)
             st.dataframe(df, use_container_width=True)

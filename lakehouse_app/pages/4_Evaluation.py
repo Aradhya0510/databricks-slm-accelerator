@@ -11,7 +11,10 @@ from utils.databricks_client import DatabricksJobClient
 inject_theme()
 StateManager.initialize()
 
-page_header("Evaluation", "Inspect training metrics, view generation samples, and compare model runs")
+page_header(
+    "Evaluation",
+    "Inspect training metrics, view generation samples, and compare model runs",
+)
 
 
 @st.cache_resource
@@ -57,7 +60,10 @@ with tab_metrics:
             st.dataframe(df, use_container_width=True)
 
         section_title("Loss Curve")
-        metric_key = st.selectbox("Metric to plot", options=list(metrics.keys()) if metrics else ["eval_loss"])
+        metric_key = st.selectbox(
+            "Metric to plot",
+            options=list(metrics.keys()) if metrics else ["eval_loss"],
+        )
         if st.button("Plot Metric"):
             try:
                 client = _get_client()
@@ -65,8 +71,14 @@ with tab_metrics:
                 if history:
                     df = pd.DataFrame(history)
                     import plotly.express as px
+
                     fig = px.line(df, x="step", y="value", title=metric_key)
-                    fig.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+                    fig.update_layout(
+                        template="plotly_dark",
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        font=dict(family="Figtree, sans-serif", color="#8A91A8"),
+                    )
                     st.plotly_chart(fig, use_container_width=True)
                 else:
                     st.info("No history found.")
@@ -82,8 +94,12 @@ with tab_compare:
     else:
         section_title("Select Runs to Compare")
         run_names = [f"{r['run_name']} ({r['run_id'][:8]})" for r in runs]
-        selected_names = st.multiselect("Runs", options=run_names, default=run_names[:2])
-        selected_runs = [r for r, n in zip(runs, run_names) if n in selected_names]
+        selected_names = st.multiselect(
+            "Runs", options=run_names, default=run_names[:2]
+        )
+        selected_runs = [
+            r for r, n in zip(runs, run_names) if n in selected_names
+        ]
 
         if selected_runs:
             all_metrics = set()
@@ -103,9 +119,26 @@ with tab_compare:
             if all_metrics:
                 compare_metric = st.selectbox("Compare metric", all_metrics)
                 import plotly.express as px
-                vals = [{"Run": r["run_name"], "Value": r.get("metrics", {}).get(compare_metric)} for r in selected_runs]
+
+                vals = [
+                    {
+                        "Run": r["run_name"],
+                        "Value": r.get("metrics", {}).get(compare_metric),
+                    }
+                    for r in selected_runs
+                ]
                 vals = [v for v in vals if v["Value"] is not None]
                 if vals:
-                    fig = px.bar(pd.DataFrame(vals), x="Run", y="Value", title=compare_metric)
-                    fig.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+                    fig = px.bar(
+                        pd.DataFrame(vals),
+                        x="Run",
+                        y="Value",
+                        title=compare_metric,
+                    )
+                    fig.update_layout(
+                        template="plotly_dark",
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        font=dict(family="Figtree, sans-serif", color="#8A91A8"),
+                    )
                     st.plotly_chart(fig, use_container_width=True)
