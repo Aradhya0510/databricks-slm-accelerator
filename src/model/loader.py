@@ -19,6 +19,11 @@ from transformers import (
 )
 
 from ..config.schema import ModelConfig
+from ..utils.environment import (
+    is_distributed_launch,
+    local_rank,
+    resolve_attn_implementation,
+)
 from .adapters import get_model_family_config
 
 
@@ -46,6 +51,42 @@ def _build_bnb_config(model_cfg: ModelConfig) -> BitsAndBytesConfig | None:
     if model_cfg.quantization == "8bit":
         return BitsAndBytesConfig(load_in_8bit=True)
     return None
+
+
+def _resolve_device_map(model_cfg: ModelConfig, quantized: bool):
+    """Choose a device placement that is correct for the current launch.
+
+    ``device_map="auto"`` shards one model across every visible GPU.  That is
+    right for single-process inference and wrong for training: under a
+    distributed launch each rank must hold a *full* replica on its own GPU,
+    otherwise every rank tries to shard across all of them.
+    """
+    import torch
+
+    if not torch.cuda.is_available():
+        return None
+
+    if is_distributed_launch():
+        # One full replica per rank, pinned to that rank's GPU.
+        return {"": local_rank()}
+
+    if quantized:
+        # Keep newly-initialised layers on the same device as the quantised
+        # backbone rather than letting accelerate split them.
+        return {"": 0}
+
+    return None
+
+
+def _resolve_dtype(model_cfg: ModelConfig):
+    """Model dtype for unquantized loads, honouring bf16 support."""
+    import torch
+
+    from ..utils.environment import resolve_precision
+
+    if not torch.cuda.is_available():
+        return torch.float32
+    return torch.bfloat16 if resolve_precision("auto") == "bf16" else torch.float16
 
 
 # ---------------------------------------------------------------------------
@@ -89,13 +130,18 @@ def load_model_for_causal_lm(
     bnb_config = _build_bnb_config(model_cfg)
     kwargs = {
         "pretrained_model_name_or_path": model_cfg.model_name,
-        "device_map": "auto" if bnb_config else None,
-        "attn_implementation": "flash_attention_2" if torch.cuda.is_available() else None,
+        "device_map": _resolve_device_map(model_cfg, quantized=bnb_config is not None),
+        # FlashAttention-2 was hardcoded on whenever CUDA was present, with no
+        # capability check and no fallback -- it is not part of DBR ML and
+        # needs Ampere or newer, so this failed outright on many clusters.
+        "attn_implementation": resolve_attn_implementation(
+            getattr(model_cfg, "attn_implementation", "auto")
+        ),
     }
     if bnb_config:
         kwargs["quantization_config"] = bnb_config
     else:
-        kwargs["torch_dtype"] = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+        kwargs["torch_dtype"] = _resolve_dtype(model_cfg)
 
     for trust_rc in ([True, False] if model_cfg.trust_remote_code else [False]):
         try:
@@ -130,22 +176,15 @@ def load_model_for_sequence_classification(
     """
     bnb_config = _build_bnb_config(model_cfg)
 
-    # Use {"": 0} instead of "auto" so newly-initialised layers (the
-    # classification head) land on the same GPU as the quantised backbone.
-    if bnb_config and torch.cuda.is_available():
-        device_map = {"": 0}
-    else:
-        device_map = None
-
     kwargs = {
         "pretrained_model_name_or_path": model_cfg.model_name,
         "num_labels": model_cfg.num_labels,
-        "device_map": device_map,
+        "device_map": _resolve_device_map(model_cfg, quantized=bnb_config is not None),
     }
     if bnb_config:
         kwargs["quantization_config"] = bnb_config
     else:
-        kwargs["torch_dtype"] = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+        kwargs["torch_dtype"] = _resolve_dtype(model_cfg)
 
     for trust_rc in ([True, False] if model_cfg.trust_remote_code else [False]):
         try:
@@ -185,7 +224,7 @@ def load_model_for_sequence_classification(
     # embedding inv_freq) can end up on CPU even when device_map puts
     # parameters on GPU.  Move any stray CPU buffers to the target device.
     if bnb_config and torch.cuda.is_available():
-        target = torch.device("cuda:0")
+        target = torch.device(f"cuda:{local_rank()}")
         for module in model.modules():
             for name, buf in module.named_buffers(recurse=False):
                 if buf is not None and buf.device.type == "cpu":

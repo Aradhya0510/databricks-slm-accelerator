@@ -1,4 +1,11 @@
-# Runtime dependencies
+# Local Development Dependencies
+#
+# Install the project for development:
+#     pip install -e ".[dev]"
+#
+# Kept for compatibility with existing docs that reference it.
+
+# Core runtime deps (also installed on the cluster by jobs/*.py entry points):
 -r requirements_runtime.txt
 
 # Evaluation

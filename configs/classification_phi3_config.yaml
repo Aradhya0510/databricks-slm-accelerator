@@ -1,6 +1,8 @@
 model:
   model_name: microsoft/Phi-3.5-mini-instruct
   task_type: text_classification
+  # Phi-3.5 ships a custom config class that transformers only picks up
+  # with remote code enabled. Opted into deliberately, per-config.
   trust_remote_code: true
 
   quantization: "4bit"
@@ -36,7 +38,8 @@ training:
   gradient_accumulation_steps: 2
   gradient_checkpointing: true
   max_grad_norm: 1.0
-  bf16: true
+  # 'auto' probes bf16 support (Ampere+) and falls back to fp16.
+  precision: auto
   early_stopping_patience: 3
   monitor_metric: eval_accuracy
   monitor_mode: max

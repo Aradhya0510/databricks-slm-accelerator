@@ -7,6 +7,30 @@ from typing import Any, Dict, List, Optional
 import mlflow
 
 
+def _is_adapter_dir(model_dir: str) -> bool:
+    """True when *model_dir* holds a PEFT adapter rather than a full model."""
+    import os
+
+    return os.path.isfile(os.path.join(model_dir, "adapter_config.json")) and not (
+        os.path.isfile(os.path.join(model_dir, "config.json"))
+    )
+
+
+def _read_adapter_base_model(model_dir: str):
+    """Return the base model id recorded beside an adapter, if any."""
+    import json
+    import os
+
+    for name in ("adapter_base_model.json", "adapter_config.json"):
+        path = os.path.join(model_dir, name)
+        if os.path.isfile(path):
+            with open(path) as f:
+                base = json.load(f).get("base_model_name_or_path")
+            if base:
+                return base
+    return None
+
+
 class TextGenerationPyFuncModel(mlflow.pyfunc.PythonModel):
     """Wraps a fine-tuned causal LM for Databricks Model Serving.
 
@@ -27,21 +51,28 @@ class TextGenerationPyFuncModel(mlflow.pyfunc.PythonModel):
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        try:
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_dir,
-                torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-                device_map="auto",
+        dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+        device_map = "auto" if torch.cuda.is_available() else None
+
+        if _is_adapter_dir(model_dir):
+            # Adapter artifacts record their base model explicitly. The old
+            # fallback read tokenizer.name_or_path, which points at the local
+            # artifact directory once reloaded rather than at the hub id, so
+            # it could never have worked.
+            base_model_name = _read_adapter_base_model(model_dir)
+            if not base_model_name:
+                raise RuntimeError(
+                    f"{model_dir} holds a PEFT adapter but records no base "
+                    f"model, so it cannot be loaded for serving."
+                )
+            base = AutoModelForCausalLM.from_pretrained(
+                base_model_name, torch_dtype=dtype, device_map=device_map,
             )
-        except Exception:
-            base_model_name = self.tokenizer.name_or_path
+            self.model = PeftModel.from_pretrained(base, model_dir).merge_and_unload()
+        else:
             self.model = AutoModelForCausalLM.from_pretrained(
-                base_model_name,
-                torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-                device_map="auto",
+                model_dir, torch_dtype=dtype, device_map=device_map,
             )
-            self.model = PeftModel.from_pretrained(self.model, model_dir)
-            self.model = self.model.merge_and_unload()
 
         self.model.eval()
 

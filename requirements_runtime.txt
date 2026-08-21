@@ -3,7 +3,11 @@
 #
 # The following are pre-installed in DBR ML and should NOT be listed here:
 #   transformers, accelerate, datasets, sentencepiece, protobuf, pydantic,
-#   torch, flash-attn, deepspeed, mlflow-skinny
+#   torch, deepspeed, mlflow-skinny
+#
+# NOT assumed present: flash-attn. It is not part of DBR ML and needs Ampere
+# or newer, so the loader probes for it and falls back to SDPA. Install it as
+# a cluster library if you want it, or set model.attn_implementation.
 # ---------------------------------------------------------------------------
 trl>=0.12
 peft>=0.10

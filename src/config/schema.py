@@ -22,7 +22,16 @@ class ModelConfig(BaseModel):
 
     model_name: str
     task_type: str = "instruction_tuning"
-    trust_remote_code: bool = True
+
+    # Defaults to False: trust_remote_code executes arbitrary Python from the
+    # model repository at load time. Models that genuinely need it (Phi-3.5's
+    # custom config, for one) opt in explicitly in their own config, so the
+    # choice is visible where it is made rather than inherited by every fork.
+    trust_remote_code: bool = False
+
+    # "auto" tries FlashAttention-2, then SDPA, then eager, based on what is
+    # actually installed and what the GPU supports.
+    attn_implementation: str = "auto"
 
     # Quantization
     quantization: str = "4bit"  # "none", "4bit", "8bit"
@@ -69,9 +78,15 @@ class ModelConfig(BaseModel):
 class DataConfig(BaseModel):
     model_config = {"extra": "allow", "protected_namespaces": ()}
 
-    train_data_path: str
+    # Either a path or a table must be supplied; validated below.
+    train_data_path: Optional[str] = None
     val_data_path: Optional[str] = None
     test_data_path: Optional[str] = None
+
+    # A ``catalog.schema.table`` reference reads from Unity Catalog instead of
+    # a file, so training data can keep its lineage and governance.
+    train_table: Optional[str] = None
+    val_table: Optional[str] = None
 
     data_format: str = "alpaca"  # alpaca, sharegpt, preference, csv
     max_seq_length: int = 2048
@@ -104,8 +119,18 @@ class DataConfig(BaseModel):
     def _validate_format(cls, v: str) -> str:
         allowed = {"alpaca", "sharegpt", "preference", "csv"}
         if v not in allowed:
-            raise ValueError(f"data_format must be one of {allowed}, got '{v}'")
+            raise ValueError(f"data_format must be one of {sorted(allowed)}, got '{v}'")
         return v
+
+    @model_validator(mode="after")
+    def _require_a_training_source(self) -> "DataConfig":
+        if not self.train_data_path and not self.train_table:
+            raise ValueError(
+                "No training data configured: set either data.train_data_path "
+                "(a file or directory) or data.train_table (a Unity Catalog "
+                "catalog.schema.table reference)."
+            )
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -125,9 +150,20 @@ class TrainingConfig(BaseModel):
     gradient_checkpointing: bool = True
     max_grad_norm: float = 1.0
 
-    # Precision
-    bf16: bool = True
-    fp16: bool = False
+    # Precision. "auto" probes bf16 support (Ampere+) and falls back to fp16;
+    # the old bf16=True default failed outright on V100 and T4.
+    precision: str = "auto"
+    bf16: Optional[bool] = None
+    fp16: Optional[bool] = None
+
+    # Reproducibility: seeds torch, numpy and the dataloaders, and is used for
+    # the train/val split. Logged as an MLflow param so a run can be repeated.
+    seed: int = 42
+
+    # Mask prompt tokens so the loss covers only the assistant's response.
+    # Training on the prompt teaches the model to reproduce its own template
+    # and measurably degrades response quality on small models.
+    completion_only_loss: bool = True
 
     # Checkpointing
     early_stopping_patience: int = 3
@@ -152,6 +188,43 @@ class TrainingConfig(BaseModel):
     # Distributed
     use_gpu: bool = True
 
+    @field_validator("precision")
+    @classmethod
+    def _validate_precision(cls, v: str) -> str:
+        allowed = {"auto", "bf16", "fp16", "fp32"}
+        if v not in allowed:
+            raise ValueError(f"precision must be one of {sorted(allowed)}, got '{v}'")
+        return v
+
+    @field_validator("monitor_mode")
+    @classmethod
+    def _validate_monitor_mode(cls, v: str) -> str:
+        if v not in {"min", "max"}:
+            raise ValueError(f"monitor_mode must be 'min' or 'max', got '{v}'")
+        return v
+
+    @field_validator("dpo_loss_type")
+    @classmethod
+    def _validate_dpo_loss_type(cls, v: str) -> str:
+        allowed = {"sigmoid", "hinge", "ipo", "kto_pair", "robust", "exo_pair",
+                   "bco_pair", "sppo_hard", "nca_pair", "aot", "aot_pair", "apo_zero",
+                   "apo_down"}
+        if v not in allowed:
+            raise ValueError(
+                f"dpo_loss_type must be one of {sorted(allowed)}, got '{v}'"
+            )
+        return v
+
+    @model_validator(mode="after")
+    def _reconcile_precision_flags(self) -> "TrainingConfig":
+        """Let the legacy bf16/fp16 booleans drive ``precision`` when set."""
+        if self.precision == "auto":
+            if self.bf16 is True:
+                self.precision = "bf16"
+            elif self.fp16 is True:
+                self.precision = "fp16"
+        return self
+
     @field_validator("lr_scheduler_type")
     @classmethod
     def _validate_scheduler(cls, v: str) -> str:
@@ -173,6 +246,21 @@ class MLflowConfig(BaseModel):
     run_name: str = "default_run"
     log_model: bool = True
     tags: Dict[str, str] = {}
+
+    # How PEFT weights are persisted. "merged" folds the adapter into the base
+    # weights so serving is an ordinary from_pretrained; "adapter" saves the
+    # adapter alone and records the base model id, which is smaller but
+    # requires the base model to stay reachable at serving time.
+    artifact_format: str = "merged"
+
+    @field_validator("artifact_format")
+    @classmethod
+    def _validate_artifact_format(cls, v: str) -> str:
+        if v not in {"merged", "adapter"}:
+            raise ValueError(
+                f"artifact_format must be 'merged' or 'adapter', got '{v}'"
+            )
+        return v
 
 
 # ---------------------------------------------------------------------------

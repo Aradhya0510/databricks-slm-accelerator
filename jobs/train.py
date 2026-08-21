@@ -1,47 +1,58 @@
 """Entry point for SLM fine-tuning.
 
-Usage (single-node, native DDP):
+Usage (auto — one process per visible GPU on this node):
     python jobs/train.py --config_path configs/sft_phi3_config.yaml
     python jobs/train.py --config_path configs/sft_phi3_config.yaml --num_gpus 4
 
-Usage (multi-node via TorchDistributor):
-    python jobs/train.py --config_path configs/sft_phi3_config.yaml --distributed torchd
+Usage (force a single process, e.g. for debugging):
+    python jobs/train.py --config_path configs/... --distributed single
+
+Usage (multi-node, spreading processes over Spark workers):
+    python jobs/train.py --config_path configs/... --distributed multinode
+
+Note: real DDP needs one process per GPU. Running this without a launcher and
+letting HF Trainer see several GPUs would give DataParallel instead, so
+multi-GPU always goes through TorchDistributor.
 """
 
 from __future__ import annotations
 
 import argparse
 import os
-import subprocess
 import sys
 from pathlib import Path
 
+# Support running this file straight from a repo checkout (Databricks Repos,
+# ``python jobs/train.py``) as well as from an installed package.  Only the
+# project root goes on the path — adding ``src/`` too would make both
+# ``import config`` and ``import src.config`` resolve, to two different module
+# objects.  Runtime dependencies are installed from main(), not at import time.
 try:
     _this_file = Path(__file__).resolve()
-except NameError:
+except NameError:  # Databricks spark_python_task exec() context
     _this_file = Path(sys.argv[0]).resolve() if sys.argv else Path(os.getcwd())
 
-_project_root = _this_file.parent.parent
-sys.path.insert(0, str(_project_root / "src"))
-sys.path.insert(0, str(_project_root))
-
-_runtime_reqs = _project_root / "requirements_runtime.txt"
-if _runtime_reqs.exists():
-    subprocess.check_call(
-        [sys.executable, "-m", "pip", "install", "-q", "-r", str(_runtime_reqs)],
-        stdout=subprocess.DEVNULL,
-    )
+_PROJECT_ROOT = _this_file.parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
 
 def main():
+    from src.utils.environment import ensure_runtime_requirements
+
+    ensure_runtime_requirements(_PROJECT_ROOT / "requirements_runtime.txt")
+
     parser = argparse.ArgumentParser(description="Fine-tune a small language model")
     parser.add_argument("--config_path", type=str, required=True,
                         help="Path to YAML config file")
     parser.add_argument("--num_gpus", type=int, default=None,
                         help="Number of GPUs (auto-detected if omitted)")
-    parser.add_argument("--distributed", type=str, default="native",
-                        choices=["native", "torchd"],
-                        help="Distribution strategy")
+    parser.add_argument("--distributed", type=str, default="auto",
+                        choices=["auto", "single", "local", "multinode"],
+                        help="'auto' (default): one process per visible GPU on "
+                             "this node. 'single': force one process. 'local': "
+                             "single-node multi-process DDP. 'multinode': "
+                             "distribute across Spark workers.")
     args = parser.parse_args()
 
     from src.config.schema import load_config
