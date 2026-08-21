@@ -23,6 +23,7 @@ from ...config.schema import PipelineConfig
 from ...model.loader import load_model_and_tokenizer
 from ...model.peft_utils import apply_peft
 from ...registry import TaskRegistry
+from ...utils.environment import resolve_precision
 from ..base import BaseTask
 from .formatting import load_classification_dataset, tokenize_classification_dataset
 
@@ -82,10 +83,13 @@ class TextClassificationTask(BaseTask):
     ) -> Tuple[Dataset, Optional[Dataset]]:
         train_ds = load_classification_dataset(config.data, split="train")
         val_ds = None
-        if config.data.val_data_path:
+        if config.data.val_data_path or config.data.val_table:
             val_ds = load_classification_dataset(config.data, split="val")
         elif config.data.val_split_ratio > 0:
-            split = train_ds.train_test_split(test_size=config.data.val_split_ratio, seed=42)
+            split = train_ds.train_test_split(
+                test_size=config.data.val_split_ratio,
+                seed=config.training.seed,
+            )
             train_ds, val_ds = split["train"], split["test"]
 
         train_ds = tokenize_classification_dataset(train_ds, tokenizer, config.data)
@@ -106,6 +110,8 @@ class TextClassificationTask(BaseTask):
         config: PipelineConfig,
         callbacks: list | None = None,
     ) -> Trainer:
+        precision = resolve_precision(config.training.precision)
+
         training_args = TrainingArguments(
             output_dir=config.training.checkpoint_dir,
             num_train_epochs=config.training.max_epochs,
@@ -119,8 +125,10 @@ class TextClassificationTask(BaseTask):
             warmup_ratio=config.training.warmup_ratio,
             lr_scheduler_type=config.training.lr_scheduler_type,
             max_grad_norm=config.training.max_grad_norm,
-            bf16=config.training.bf16,
-            fp16=config.training.fp16,
+            bf16=(precision == "bf16"),
+            fp16=(precision == "fp16"),
+            seed=config.training.seed,
+            data_seed=config.training.seed,
             eval_strategy="epoch" if val_dataset else "no",
             save_strategy="epoch",
             logging_steps=config.training.log_every_n_steps,

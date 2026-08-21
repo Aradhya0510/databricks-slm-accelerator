@@ -164,3 +164,52 @@ A reusable Databricks Job (`slm-sanity-suite`) runs these as a regression suite.
 ## Adding a New Model Family
 
 Add an entry to `_FAMILY_CONFIGS` in `src/model/adapters.py` with the model's LoRA target modules, padding side, and special token behavior. The `detect_model_family()` function matches model names by substring, so also add a pattern entry if the model name doesn't match an existing family.
+
+## Multi-GPU
+
+Real DDP needs **one process per GPU**. Running the training script as a plain
+`python` process and letting HF Trainer see several GPUs gives `nn.DataParallel`
+instead — a single process driving every GPU, which is slower and interprets
+`per_device_train_batch_size` as the *total* batch rather than the per-GPU
+batch. So multi-GPU always goes through `TorchDistributor`:
+
+| `--distributed` | What it does | When |
+|---|---|---|
+| `auto` (default) | One process per visible GPU on this node | Normal use |
+| `single` | Forces one process, pinned to one GPU | Debugging |
+| `local` | Single-node multi-process DDP | Explicit form of `auto` |
+| `multinode` | Spreads processes across Spark workers | Cluster has workers |
+
+## Completion-only loss
+
+Instruction tuning masks the prompt by default (`training.completion_only_loss`),
+so the loss covers only the assistant's response. Training on the prompt as well
+teaches the model to reproduce its own template and wastes capacity that small
+models do not have to spare. Set it to `false` for whole-sequence training.
+
+## Model artifacts
+
+`mlflow.artifact_format` decides how PEFT weights are persisted:
+
+- **`merged`** (default) folds the adapter into the base weights, so serving is
+  an ordinary `from_pretrained` and does not need the base model to stay
+  reachable.
+- **`adapter`** saves the adapter alone and records the base model id beside it.
+  Much smaller, but the base model must remain available at serving time.
+
+## Data sources
+
+Training data can come from a file (`data.train_data_path`) or directly from a
+Unity Catalog table (`data.train_table`, as `catalog.schema.table`). The table
+path keeps lineage and governance rather than requiring an export to JSONL.
+
+## Testing
+
+```bash
+pip install -e ".[dev]"
+pytest
+```
+
+The suite is offline and CPU-only by design — models are built from configs in
+code rather than downloaded — so it runs anywhere and cannot be broken by a
+HuggingFace Hub outage.

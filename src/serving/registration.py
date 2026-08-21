@@ -9,24 +9,21 @@ from typing import Any, Dict, List, Optional
 import mlflow
 from mlflow.models import infer_signature
 
+from .artifacts import load_model_from_dir, resolve_model_dir
 
-def _resolve_model_artifacts(
-    run_id: str,
-    model_uri: Optional[str] = None,
-) -> str:
-    """Download the model artifacts logged during training."""
-    if model_uri:
-        return mlflow.artifacts.download_artifacts(artifact_uri=model_uri)
 
-    client = mlflow.MlflowClient()
-    run = client.get_run(run_id)
-    stored_uri = run.data.params.get("logged_model_uri")
-    if stored_uri:
-        return mlflow.artifacts.download_artifacts(artifact_uri=stored_uri)
+def _set_uc_registry() -> None:
+    """Point the MLflow registry at Unity Catalog.
 
-    return mlflow.artifacts.download_artifacts(
-        artifact_uri=f"runs:/{run_id}/model",
-    )
+    Three-level ``catalog.schema.model`` names are only valid against the UC
+    registry; relying on the workspace default failed with an opaque
+    name-format error anywhere that default was not already UC.
+    """
+    try:
+        if mlflow.get_registry_uri() != "databricks-uc":
+            mlflow.set_registry_uri("databricks-uc")
+    except Exception as exc:  # noqa: BLE001 - non-Databricks tracking backends
+        print(f"Note: could not set the Unity Catalog registry URI ({exc}).")
 
 
 def register_model(
@@ -55,21 +52,28 @@ def register_model(
     aliases = aliases or ["champion", "latest"]
     tags = tags or {}
 
-    artifact_path = _resolve_model_artifacts(run_id, model_uri)
+    _set_uc_registry()
 
-    # Save model + tokenizer to a clean temp directory
+    # Resolve the artifacts. This handles both formats the training run may
+    # have written: a merged model, or a PEFT adapter plus its recorded base
+    # model. Calling AutoModelForCausalLM.from_pretrained on an adapter
+    # directory — which is what the default QLoRA config produces — used to
+    # raise here, so the headline workflow never reached registration.
+    artifact_path, artifact_format = resolve_model_dir(
+        run_id=run_id, model_uri=model_uri,
+    )
+    print(f"Resolved {artifact_format} artifacts from {artifact_path}")
+
+    from transformers import AutoTokenizer
+
     tmpdir = tempfile.mkdtemp(prefix="slm_pyfunc_")
     model_dir = os.path.join(tmpdir, "model_artifacts")
 
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-
-    if task_type == "text_classification":
-        from transformers import AutoModelForSequenceClassification
-        model = AutoModelForSequenceClassification.from_pretrained(artifact_path)
-    else:
-        model = AutoModelForCausalLM.from_pretrained(artifact_path)
-
+    model = load_model_from_dir(artifact_path, task_type=task_type)
     tokenizer = AutoTokenizer.from_pretrained(artifact_path)
+
+    # Always hand serving a standalone model directory, whichever format the
+    # training run produced.
     model.save_pretrained(model_dir)
     tokenizer.save_pretrained(model_dir)
 

@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "databricks-slm-accelerator"
+version = "0.2.0"
+description = "Fine-tune, evaluate, register and serve small language models on Databricks."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+
+# torch, transformers, accelerate, datasets and mlflow ship with Databricks
+# Runtime ML. Only packages that are NOT on DBR ML are listed here, mirroring
+# requirements_runtime.txt.
+dependencies = [
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    "trl>=0.12",
+    "peft>=0.10",
+    "bitsandbytes>=0.43",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "torch>=2.0",
+    "transformers>=4.44,<5",
+    "datasets>=2.14",
+    "mlflow>=2.9",
+    "rouge-score>=0.1.2",
+]
+
+# Deliberately not installed as a distribution package. The importable name
+# here is literally ``src``, which is far too generic to claim globally --
+# installing this repo and the CV accelerator into one environment would have
+# them shadow each other. Code runs from a repo checkout instead: the job
+# entry points put the project root on sys.path, and pytest does the same via
+# the pythonpath setting below.
+[tool.setuptools]
+packages = []
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+    "hub: test requires network access to the HuggingFace Hub",
+    "slow: test takes more than a few seconds",
+]
+filterwarnings = ["ignore::DeprecationWarning"]

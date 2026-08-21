@@ -1,7 +1,8 @@
 model:
   model_name: meta-llama/Llama-3.2-3B-Instruct
   task_type: instruction_tuning
-  trust_remote_code: true
+  # Llama ships a native transformers config; no remote code needed.
+  trust_remote_code: false
 
   quantization: "4bit"
   bnb_4bit_compute_dtype: bfloat16
@@ -38,7 +39,8 @@ training:
   gradient_accumulation_steps: 4
   gradient_checkpointing: true
   max_grad_norm: 1.0
-  bf16: true
+  # 'auto' probes bf16 support (Ampere+) and falls back to fp16.
+  precision: auto
   packing: false
   early_stopping_patience: 3
   monitor_metric: eval_loss

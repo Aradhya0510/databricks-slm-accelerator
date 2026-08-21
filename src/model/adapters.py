@@ -30,6 +30,14 @@ class ModelFamilyConfig:
 # ---------------------------------------------------------------------------
 
 _FAMILY_CONFIGS: Dict[str, ModelFamilyConfig] = {
+    "phi-2": ModelFamilyConfig(
+        family="phi-2",
+        # phi-2 predates the fused projections phi-3 uses; mapping it onto the
+        # phi-3 entry meant PEFT could not resolve any target module.
+        lora_target_modules=["Wqkv", "out_proj", "fc1", "fc2"],
+        padding_side="right",
+        use_eos_as_pad=True,
+    ),
     "phi-3": ModelFamilyConfig(
         family="phi-3",
         lora_target_modules=["qkv_proj", "o_proj", "gate_up_proj", "down_proj"],
@@ -73,13 +81,19 @@ _FAMILY_CONFIGS: Dict[str, ModelFamilyConfig] = {
 }
 
 
-def detect_model_family(model_name: str) -> str:
-    """Infer the model family from a HuggingFace model name/path."""
+def detect_model_family(model_name: str, strict: bool = False) -> str:
+    """Infer the model family from a HuggingFace model name/path.
+
+    With ``strict=True`` an unrecognised name raises instead of falling back
+    to llama.  The fallback silently hands out llama's projection names, which
+    do not exist in Falcon, GPT-2 or MPT, so the failure surfaced deep inside
+    PEFT's target resolution rather than here.
+    """
     name_lower = model_name.lower()
 
     patterns = [
         ("phi-4", "phi-4"),
-        ("phi-3", "phi-3"), ("phi-2", "phi-3"), ("phi", "phi-3"),
+        ("phi-3", "phi-3"), ("phi-2", "phi-2"), ("phi", "phi-3"),
         ("llama", "llama"),
         ("mistral", "mistral"), ("mixtral", "mistral"),
         ("gemma", "gemma"),
@@ -89,10 +103,24 @@ def detect_model_family(model_name: str) -> str:
         if pattern in name_lower:
             return family
 
-    return "llama"  # safe default — most open models use the Llama architecture
+    if strict:
+        raise ValueError(
+            f"Unrecognised model family for '{model_name}'. Known families: "
+            f"{sorted(_FAMILY_CONFIGS)}. Either add an entry to _FAMILY_CONFIGS "
+            f"or set model.lora_target_modules explicitly in your config."
+        )
+
+    print(
+        f"Warning: unrecognised model family for '{model_name}'; assuming "
+        f"llama-style projections. If PEFT cannot find the target modules, "
+        f"set model.lora_target_modules explicitly."
+    )
+    return "llama"
 
 
-def get_model_family_config(model_name: str) -> ModelFamilyConfig:
+def get_model_family_config(
+    model_name: str, strict: bool = False,
+) -> ModelFamilyConfig:
     """Return the ``ModelFamilyConfig`` for a model, auto-detecting the family."""
-    family = detect_model_family(model_name)
+    family = detect_model_family(model_name, strict=strict)
     return _FAMILY_CONFIGS[family]

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
+from typing import Optional
 
 from transformers import (
     EarlyStoppingCallback as _HFEarlyStoppingCallback,
@@ -14,14 +16,28 @@ from transformers import (
 )
 
 
+_CHECKPOINT_RE = re.compile(r"^checkpoint-(\d+)$")
+
+
 class VolumeCheckpointCallback(TrainerCallback):
     """Copy Trainer checkpoints to a persistent /Volumes/ directory.
 
-    Ensures checkpoints survive ephemeral cluster storage.
+    Training writes to fast local disk; this mirrors onto a UC Volume so
+    checkpoints survive the cluster.
+
+    Two things a naive mirror gets wrong:
+
+    * **Only rank 0 copies.**  Under DDP every rank runs ``on_save``, and
+      without this guard they all write the same checkpoint to the same
+      Volume path concurrently.
+    * **Retention is mirrored.**  ``save_total_limit`` prunes the local
+      directory but not the Volume, so the mirror grew without bound — tens
+      of GB per epoch for a 7B model.
     """
 
-    def __init__(self, volume_dir: str):
+    def __init__(self, volume_dir: str, save_total_limit: Optional[int] = None):
         self.volume_dir = volume_dir
+        self.save_total_limit = save_total_limit
         os.makedirs(self.volume_dir, exist_ok=True)
         print(f"Checkpoints will be copied to volume: {self.volume_dir}")
 
@@ -32,6 +48,9 @@ class VolumeCheckpointCallback(TrainerCallback):
         control: TrainerControl,
         **kwargs,
     ):
+        if not state.is_world_process_zero:
+            return
+
         ckpt_dir = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
         if not os.path.isdir(ckpt_dir):
             return
@@ -44,6 +63,28 @@ class VolumeCheckpointCallback(TrainerCallback):
             print(f"Copied checkpoint to volume: {dest}")
         except Exception as e:
             print(f"Warning: failed to copy checkpoint to volume: {e}")
+            return
+
+        self._prune()
+
+    def _prune(self) -> None:
+        """Keep only the newest ``save_total_limit`` checkpoints on the Volume."""
+        if not self.save_total_limit or self.save_total_limit <= 0:
+            return
+
+        try:
+            checkpoints = []
+            for name in os.listdir(self.volume_dir):
+                match = _CHECKPOINT_RE.match(name)
+                if match and os.path.isdir(os.path.join(self.volume_dir, name)):
+                    checkpoints.append((int(match.group(1)), name))
+
+            checkpoints.sort()
+            for _, name in checkpoints[: -self.save_total_limit]:
+                shutil.rmtree(os.path.join(self.volume_dir, name), ignore_errors=True)
+                print(f"Pruned old volume checkpoint: {name}")
+        except Exception as e:
+            print(f"Warning: failed to prune volume checkpoints: {e}")
 
 
 class EarlyStoppingCallback(_HFEarlyStoppingCallback):

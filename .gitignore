@@ -50,3 +50,6 @@ configs/sanity_*
 .env
 *.pem
 credentials.json
+
+# Packaging
+*.egg-info/
