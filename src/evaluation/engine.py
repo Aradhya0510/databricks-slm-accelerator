@@ -35,45 +35,44 @@ class EvaluationEngine:
         run_id: Optional[str] = None,
         model_uri: Optional[str] = None,
     ):
-        """Load model + tokenizer from local path, MLflow run, or model URI."""
-        if model_uri is not None:
-            import mlflow
-            model = mlflow.transformers.load_model(model_uri)
-            tokenizer = AutoTokenizer.from_pretrained(
-                self.config.model.model_name,
-                trust_remote_code=self.config.model.trust_remote_code,
-            )
-            return model, tokenizer
+        """Load model + tokenizer from local path, MLflow run, or model URI.
 
-        if run_id is not None:
-            import mlflow
-            try:
-                client = mlflow.MlflowClient()
-                run = client.get_run(run_id)
-                stored_uri = run.data.params.get("logged_model_uri")
-                if stored_uri:
-                    model = mlflow.transformers.load_model(stored_uri)
-                    tokenizer = AutoTokenizer.from_pretrained(
-                        self.config.model.model_name,
-                        trust_remote_code=self.config.model.trust_remote_code,
-                    )
-                    return model, tokenizer
-            except Exception:
-                pass
-            model = mlflow.transformers.load_model(f"runs:/{run_id}/model")
+        Runs and URIs resolve through the same artifact contract registration
+        uses.  Training logs the weights as plain artifacts rather than a
+        transformers flavor, so ``mlflow.transformers.load_model`` cannot read
+        them — it looks for an ``MLmodel`` file that was never written.
+        """
+        from ..serving.artifacts import (
+            is_adapter_dir,
+            load_model_from_dir,
+            resolve_model_dir,
+        )
+
+        if model_uri is not None or run_id is not None:
+            resolved_dir, _ = resolve_model_dir(run_id=run_id, model_uri=model_uri)
+            model = load_model_from_dir(
+                resolved_dir, task_type=self.config.model.task_type,
+            )
             tokenizer = AutoTokenizer.from_pretrained(
-                self.config.model.model_name,
+                resolved_dir,
                 trust_remote_code=self.config.model.trust_remote_code,
             )
             return model, tokenizer
 
         if model_path is not None:
-            model = AutoModelForCausalLM.from_pretrained(
-                model_path,
-                trust_remote_code=self.config.model.trust_remote_code,
-                torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-                device_map="auto",
-            )
+            if is_adapter_dir(model_path):
+                # A Trainer checkpoint from a PEFT run is an adapter directory,
+                # which AutoModelForCausalLM cannot load on its own.
+                model = load_model_from_dir(
+                    model_path, task_type=self.config.model.task_type,
+                )
+            else:
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_path,
+                    trust_remote_code=self.config.model.trust_remote_code,
+                    torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+                    device_map="auto",
+                )
             tokenizer = AutoTokenizer.from_pretrained(
                 model_path,
                 trust_remote_code=self.config.model.trust_remote_code,

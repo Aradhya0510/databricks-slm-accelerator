@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 import mlflow
 from mlflow.models import infer_signature
 
-from .artifacts import load_model_from_dir, resolve_model_dir
+from .artifacts import load_model_from_dir, resolve_model_dir, save_standalone_model
 
 
 def _set_uc_registry() -> None:
@@ -24,6 +24,20 @@ def _set_uc_registry() -> None:
             mlflow.set_registry_uri("databricks-uc")
     except Exception as exc:  # noqa: BLE001 - non-Databricks tracking backends
         print(f"Note: could not set the Unity Catalog registry URI ({exc}).")
+
+
+def _use_run_experiment(run_id: str) -> None:
+    """Log the PyFunc into the same experiment as the training run.
+
+    ``mlflow.pyfunc.log_model`` creates a logged model, which needs an
+    experiment id.  A notebook has a default one; a job's Python entry point
+    does not, and the API rejects the call with a missing-field error.
+    """
+    try:
+        experiment_id = mlflow.MlflowClient().get_run(run_id).info.experiment_id
+        mlflow.set_experiment(experiment_id=experiment_id)
+    except Exception as exc:  # noqa: BLE001 - keep an explicit experiment optional
+        print(f"Note: could not adopt the run's experiment ({exc}).")
 
 
 def register_model(
@@ -44,15 +58,17 @@ def register_model(
         registered_model_name: Three-level UC name (catalog.schema.model).
         task_type: Selects the PyFunc wrapper class.
         model_uri: Direct model URI from log_model.
-        aliases: Aliases for the new version (e.g. ["champion"]).
+        aliases: Aliases for the new version (e.g. ["champion"]). "latest" is
+            reserved by the registry and cannot be used.
         tags: Tags to attach to the model version.
         validate: If True, run a local prediction test before registering.
         test_prompt: Optional prompt for validation.
     """
-    aliases = aliases or ["champion", "latest"]
+    aliases = aliases or ["champion"]
     tags = tags or {}
 
     _set_uc_registry()
+    _use_run_experiment(run_id)
 
     # Resolve the artifacts. This handles both formats the training run may
     # have written: a merged model, or a PEFT adapter plus its recorded base
@@ -74,8 +90,7 @@ def register_model(
 
     # Always hand serving a standalone model directory, whichever format the
     # training run produced.
-    model.save_pretrained(model_dir)
-    tokenizer.save_pretrained(model_dir)
+    save_standalone_model(model, tokenizer, model_dir)
 
     # Build signature
     import pandas as pd

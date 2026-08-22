@@ -110,11 +110,27 @@ def log_model_artifacts(
     return f"runs:/{run.info.run_id}/{artifact_name}"
 
 
+def save_standalone_model(model: Any, tokenizer: Any, out_dir: str) -> None:
+    """Write a directory that ``from_pretrained`` can read back.
+
+    transformers 5 defaults to re-emitting the checkpoint in the layout it was
+    originally published in, and the reverse of that conversion is not
+    implemented for every architecture -- Phi-3 among them, which raises a bare
+    ``NotImplementedError`` from deep inside the save. Ask for the current
+    layout instead, which loads back identically.
+    """
+    import inspect
+
+    params = inspect.signature(model.save_pretrained).parameters
+    extra = {"save_original_format": False} if "save_original_format" in params else {}
+    model.save_pretrained(out_dir, **extra)
+    tokenizer.save_pretrained(out_dir)
+
+
 def _save_merged(model: Any, tokenizer: Any, out_dir: str) -> str:
     """Merge LoRA weights into the base model and save a standalone checkpoint."""
     merged = model.merge_and_unload()
-    merged.save_pretrained(out_dir)
-    tokenizer.save_pretrained(out_dir)
+    save_standalone_model(merged, tokenizer, out_dir)
     return MERGED_FORMAT
 
 
