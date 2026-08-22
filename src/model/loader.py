@@ -89,6 +89,33 @@ def _resolve_dtype(model_cfg: ModelConfig):
     return torch.bfloat16 if resolve_precision("auto") == "bf16" else torch.float16
 
 
+def _text_config(config):
+    """The sub-config that owns the language model's fields.
+
+    Configs with a separate text tower (Qwen3.5's ``Qwen3_5Config`` among them)
+    keep the vocabulary size and token ids under ``text_config`` and raise
+    ``AttributeError`` for them at the top level.
+    """
+    return getattr(config, "text_config", config)
+
+
+def _resize_embeddings_if_needed(model: PreTrainedModel, tokenizer) -> None:
+    """Grow the embedding matrix when the tokenizer has extra tokens."""
+    vocab_size = getattr(_text_config(model.config), "vocab_size", None)
+    if tokenizer and vocab_size and len(tokenizer) > vocab_size:
+        model.resize_token_embeddings(len(tokenizer))
+
+
+def _ensure_pad_token_id(model: PreTrainedModel, tokenizer) -> None:
+    """Point the model's pad id at the tokenizer's, on whichever config holds it."""
+    if not tokenizer:
+        return
+    text_config = _text_config(model.config)
+    if getattr(text_config, "pad_token_id", None) is None:
+        text_config.pad_token_id = tokenizer.pad_token_id
+        model.config.pad_token_id = tokenizer.pad_token_id
+
+
 # ---------------------------------------------------------------------------
 # Tokenizer
 # ---------------------------------------------------------------------------
@@ -157,8 +184,7 @@ def load_model_for_causal_lm(
                 "trust_remote_code=True, retrying with native config..."
             )
 
-    if tokenizer and len(tokenizer) > model.config.vocab_size:
-        model.resize_token_embeddings(len(tokenizer))
+    _resize_embeddings_if_needed(model, tokenizer)
 
     return model
 
@@ -230,11 +256,8 @@ def load_model_for_sequence_classification(
                 if buf is not None and buf.device.type == "cpu":
                     module.register_buffer(name, buf.to(target))
 
-    if tokenizer and len(tokenizer) > model.config.vocab_size:
-        model.resize_token_embeddings(len(tokenizer))
-
-    if model.config.pad_token_id is None and tokenizer:
-        model.config.pad_token_id = tokenizer.pad_token_id
+    _resize_embeddings_if_needed(model, tokenizer)
+    _ensure_pad_token_id(model, tokenizer)
 
     return model
 

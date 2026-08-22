@@ -112,6 +112,7 @@ YAML Config → PipelineConfig (Pydantic v2) → TrainingEngine
 - **GPU**: A10G (g5.4xlarge), A100, or H100 — single or multi-GPU
 - **Pre-installed by DBR ML**: `transformers`, `accelerate`, `datasets`, `sentencepiece`, `protobuf`, `pydantic`, `torch`, `flash-attn`, `deepspeed`, `mlflow`
 - **Installed at runtime**: `trl>=0.12`, `peft>=0.10`, `bitsandbytes>=0.43` (see `requirements_runtime.txt`)
+- **transformers 5.x**: `trl` requires a newer `transformers` than DBR 17.3 bundles, so installing the runtime requirements upgrades it to 5.x. This is the supported configuration — `warmup_ratio` in your config is translated to the keyword the installed version expects, so the YAML is unchanged either way.
 
 ## Data Formats
 
@@ -139,7 +140,7 @@ text,label
 
 ## Tested Combinations
 
-The framework has been validated across the following task/model/data-format matrix on DBR 17.3 LTS ML GPU (`g5.4xlarge`, A10G):
+Every combination below trains, evaluates and reports metrics end to end on DBR 17.3 LTS ML GPU with a single A10G GPU, under transformers 5.x:
 
 | Task Type | Model | Data Format |
 |-----------|-------|-------------|
@@ -152,7 +153,9 @@ The framework has been validated across the following task/model/data-format mat
 | instruction_tuning | Qwen3.5-4B | Alpaca |
 | text_classification | Qwen3.5-4B | CSV |
 
-A reusable Databricks Job (`slm-sanity-suite`) runs these as a regression suite. The configs and synthetic data live in the Databricks workspace (not in this repo).
+Qwen3.5 needs transformers 5.x specifically: the `qwen3_5` architecture does not exist in the 4.x line, which rejects the checkpoint as an unrecognised model type.
+
+These run as a regression suite from small synthetic datasets in each supported format; the fixtures are not part of the repo.
 
 ## Adding a New Task
 
