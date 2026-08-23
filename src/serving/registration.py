@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import mlflow
@@ -38,6 +40,45 @@ def _use_run_experiment(run_id: str) -> None:
         mlflow.set_experiment(experiment_id=experiment_id)
     except Exception as exc:  # noqa: BLE001 - keep an explicit experiment optional
         print(f"Note: could not adopt the run's experiment ({exc}).")
+
+
+def _quantization_method(model_dir: str) -> Optional[str]:
+    """The ``quant_method`` recorded in a saved model's config, if any."""
+    path = os.path.join(model_dir, "config.json")
+    if not os.path.isfile(path):
+        return None
+
+    with open(path) as f:
+        config = json.load(f)
+
+    return (config.get("quantization_config") or {}).get("quant_method")
+
+
+def _pip_requirements(model_dir: str) -> List[str]:
+    """The packages a serving container needs to load *model_dir*.
+
+    Read off the artifact rather than fixed, because the validation step below
+    runs on the training cluster, where every dependency is already present.
+    A hardcoded list can therefore pass validation and still fail to load in
+    serving, which is exactly what a missing entry here looks like.
+    """
+    requirements = [
+        "mlflow>=3.1",
+        "torch>=2.0",
+        # The saved config uses transformers 5 field names, which 4.x does not
+        # understand, so serving cannot fall back to the older line.
+        "transformers>=5",
+        "peft>=0.10",
+        "accelerate>=0.28",
+    ]
+
+    if _quantization_method(model_dir) == "bitsandbytes":
+        # Merging an adapter into a 4-bit base merges into the quantised
+        # weights and leaves the result quantised, so the kernels are still
+        # needed at inference time even though PEFT no longer is.
+        requirements.append("bitsandbytes>=0.43")
+
+    return requirements
 
 
 def register_model(
@@ -115,18 +156,19 @@ def register_model(
         pyfunc_model = TextGenerationPyFuncModel()
         artifact_name = "text_generation_pyfunc"
 
-    pip_requirements = [
-        "mlflow>=3.1",
-        "torch>=2.0",
-        "transformers>=4.40",
-        "peft>=0.10",
-        "accelerate>=0.28",
-    ]
+    pip_requirements = _pip_requirements(model_dir)
+    print(f"Serving requirements: {pip_requirements}")
 
     model_info = mlflow.pyfunc.log_model(
         name=artifact_name,
         python_model=pyfunc_model,
         artifacts={"model_dir": model_dir},
+        # The wrapper is logged as a pickled instance, so loading it imports
+        # the module it was defined in. Without the package alongside it,
+        # serving fails on `No module named 'src'` -- but only in the
+        # container, never during the validation below, which runs where the
+        # source tree is already importable.
+        code_paths=[str(Path(__file__).resolve().parents[1])],
         pip_requirements=pip_requirements,
         signature=signature,
         input_example=input_example,
