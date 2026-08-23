@@ -8,6 +8,14 @@
 # NOT assumed present: flash-attn. It is not part of DBR ML and needs Ampere
 # or newer, so the loader probes for it and falls back to SDPA. Install it as
 # a cluster library if you want it, or set model.attn_implementation.
+#
+# trl needs a newer transformers than DBR 17.3 bundles, so installing this file
+# upgrades transformers to 5.x. DBR's own sentence-transformers and
+# mosaicml-streaming both declare transformers<5, so pip reports them as
+# conflicting. Neither package is used here, neither is imported by the runtime
+# at startup, and both still import under transformers 5. If you need
+# sentence-transformers alongside this pipeline, 6.0+ supports transformers 5;
+# mosaicml-streaming has no transformers 5 release yet.
 # ---------------------------------------------------------------------------
 trl>=0.12
 peft>=0.10

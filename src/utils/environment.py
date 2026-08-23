@@ -145,6 +145,24 @@ def resolve_attn_implementation(requested: str = "auto") -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# Trainer argument compatibility
+# ---------------------------------------------------------------------------
+
+def warmup_kwargs(ratio: float, config_cls: type) -> dict:
+    """Express a warmup ratio as the keyword ``config_cls`` actually accepts.
+
+    transformers 5 dropped ``warmup_ratio`` and folded it into ``warmup_steps``,
+    which reads a float in [0, 1) as a ratio.  On 4.x the two coexist and a
+    float ``warmup_steps`` would be taken as a literal step count instead.
+    """
+    import inspect
+
+    params = inspect.signature(config_cls.__init__).parameters
+    field = "warmup_ratio" if "warmup_ratio" in params else "warmup_steps"
+    return {field: ratio}
+
+
+# ---------------------------------------------------------------------------
 # Data staging for /Volumes/ → local disk
 # ---------------------------------------------------------------------------
 

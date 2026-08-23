@@ -16,7 +16,7 @@ from ...config.schema import PipelineConfig
 from ...model.loader import load_model_and_tokenizer
 from ...model.peft_utils import apply_peft
 from ...registry import TaskRegistry
-from ...utils.environment import resolve_precision
+from ...utils.environment import resolve_precision, warmup_kwargs
 from ..base import BaseTask
 from .formatting import load_preference_dataset
 
@@ -83,7 +83,7 @@ class DPOTask(BaseTask):
             gradient_checkpointing_kwargs={"use_reentrant": False},
             learning_rate=config.training.learning_rate,
             weight_decay=config.training.weight_decay,
-            warmup_ratio=config.training.warmup_ratio,
+            **warmup_kwargs(config.training.warmup_ratio, DPOConfig),
             lr_scheduler_type=config.training.lr_scheduler_type,
             max_grad_norm=config.training.max_grad_norm,
             bf16=(precision == "bf16"),

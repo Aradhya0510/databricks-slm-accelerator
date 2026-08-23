@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import mlflow
 from mlflow.models import infer_signature
 
-from .artifacts import load_model_from_dir, resolve_model_dir
+from .artifacts import load_model_from_dir, resolve_model_dir, save_standalone_model
 
 
 def _set_uc_registry() -> None:
@@ -24,6 +26,59 @@ def _set_uc_registry() -> None:
             mlflow.set_registry_uri("databricks-uc")
     except Exception as exc:  # noqa: BLE001 - non-Databricks tracking backends
         print(f"Note: could not set the Unity Catalog registry URI ({exc}).")
+
+
+def _use_run_experiment(run_id: str) -> None:
+    """Log the PyFunc into the same experiment as the training run.
+
+    ``mlflow.pyfunc.log_model`` creates a logged model, which needs an
+    experiment id.  A notebook has a default one; a job's Python entry point
+    does not, and the API rejects the call with a missing-field error.
+    """
+    try:
+        experiment_id = mlflow.MlflowClient().get_run(run_id).info.experiment_id
+        mlflow.set_experiment(experiment_id=experiment_id)
+    except Exception as exc:  # noqa: BLE001 - keep an explicit experiment optional
+        print(f"Note: could not adopt the run's experiment ({exc}).")
+
+
+def _quantization_method(model_dir: str) -> Optional[str]:
+    """The ``quant_method`` recorded in a saved model's config, if any."""
+    path = os.path.join(model_dir, "config.json")
+    if not os.path.isfile(path):
+        return None
+
+    with open(path) as f:
+        config = json.load(f)
+
+    return (config.get("quantization_config") or {}).get("quant_method")
+
+
+def _pip_requirements(model_dir: str) -> List[str]:
+    """The packages a serving container needs to load *model_dir*.
+
+    Read off the artifact rather than fixed, because the validation step below
+    runs on the training cluster, where every dependency is already present.
+    A hardcoded list can therefore pass validation and still fail to load in
+    serving, which is exactly what a missing entry here looks like.
+    """
+    requirements = [
+        "mlflow>=3.1",
+        "torch>=2.0",
+        # The saved config uses transformers 5 field names, which 4.x does not
+        # understand, so serving cannot fall back to the older line.
+        "transformers>=5",
+        "peft>=0.10",
+        "accelerate>=0.28",
+    ]
+
+    if _quantization_method(model_dir) == "bitsandbytes":
+        # Merging an adapter into a 4-bit base merges into the quantised
+        # weights and leaves the result quantised, so the kernels are still
+        # needed at inference time even though PEFT no longer is.
+        requirements.append("bitsandbytes>=0.43")
+
+    return requirements
 
 
 def register_model(
@@ -44,15 +99,17 @@ def register_model(
         registered_model_name: Three-level UC name (catalog.schema.model).
         task_type: Selects the PyFunc wrapper class.
         model_uri: Direct model URI from log_model.
-        aliases: Aliases for the new version (e.g. ["champion"]).
+        aliases: Aliases for the new version (e.g. ["champion"]). "latest" is
+            reserved by the registry and cannot be used.
         tags: Tags to attach to the model version.
         validate: If True, run a local prediction test before registering.
         test_prompt: Optional prompt for validation.
     """
-    aliases = aliases or ["champion", "latest"]
+    aliases = aliases or ["champion"]
     tags = tags or {}
 
     _set_uc_registry()
+    _use_run_experiment(run_id)
 
     # Resolve the artifacts. This handles both formats the training run may
     # have written: a merged model, or a PEFT adapter plus its recorded base
@@ -74,8 +131,7 @@ def register_model(
 
     # Always hand serving a standalone model directory, whichever format the
     # training run produced.
-    model.save_pretrained(model_dir)
-    tokenizer.save_pretrained(model_dir)
+    save_standalone_model(model, tokenizer, model_dir)
 
     # Build signature
     import pandas as pd
@@ -100,18 +156,19 @@ def register_model(
         pyfunc_model = TextGenerationPyFuncModel()
         artifact_name = "text_generation_pyfunc"
 
-    pip_requirements = [
-        "mlflow>=3.1",
-        "torch>=2.0",
-        "transformers>=4.40",
-        "peft>=0.10",
-        "accelerate>=0.28",
-    ]
+    pip_requirements = _pip_requirements(model_dir)
+    print(f"Serving requirements: {pip_requirements}")
 
     model_info = mlflow.pyfunc.log_model(
         name=artifact_name,
         python_model=pyfunc_model,
         artifacts={"model_dir": model_dir},
+        # The wrapper is logged as a pickled instance, so loading it imports
+        # the module it was defined in. Without the package alongside it,
+        # serving fails on `No module named 'src'` -- but only in the
+        # container, never during the validation below, which runs where the
+        # source tree is already importable.
+        code_paths=[str(Path(__file__).resolve().parents[1])],
         pip_requirements=pip_requirements,
         signature=signature,
         input_example=input_example,

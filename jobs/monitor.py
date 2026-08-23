@@ -61,4 +61,9 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # Only a breach exits non-zero. A bare sys.exit(0) is reported as a task
+    # failure when this file is exec'd as a Databricks Python task, which made
+    # every healthy monitoring run look like a failed job.
+    _status = main()
+    if _status:
+        sys.exit(_status)

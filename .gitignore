@@ -46,6 +46,9 @@ _upload_staging/
 # Sanity suite configs (workspace-specific paths, not for end users)
 configs/sanity_*
 
+# Local record of resources created in a workspace (holds workspace-specific ids)
+.databricks-resources.json
+
 # Secrets / credentials
 .env
 *.pem
