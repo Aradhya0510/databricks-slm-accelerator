@@ -4,17 +4,24 @@
 # MAGIC
 # MAGIC Fine-tune a small language model using the SLM accelerator.
 # MAGIC Supports SFT (instruction tuning), DPO, and text classification.
+# MAGIC
+# MAGIC Attach this notebook to **AI Runtime** (serverless GPU). An A10 trains the
+# MAGIC shipped configs; on an 8xH100 node training runs one process per GPU.
 
 # COMMAND ----------
 
-# MAGIC %pip install -r ../requirements_runtime.txt
-# MAGIC %restart_python
+# MAGIC %pip install -q -r ../requirements.txt
 
 # COMMAND ----------
 
-import sys, os
-sys.path.insert(0, os.path.join(os.getcwd(), ".."))
-sys.path.insert(0, os.path.join(os.getcwd(), "..", "src"))
+dbutils.library.restartPython()
+
+# COMMAND ----------
+
+import os
+import sys
+
+sys.path.insert(0, os.path.abspath(".."))
 
 # COMMAND ----------
 
@@ -23,10 +30,10 @@ sys.path.insert(0, os.path.join(os.getcwd(), "..", "src"))
 
 # COMMAND ----------
 
-from src.config.schema import load_config
+from src.pipeline import load_pipeline_config
 
-CONFIG_PATH = "../configs/sft_phi3_config.yaml"
-config = load_config(CONFIG_PATH)
+CONFIG_PATH = "configs/sft_phi3_config.yaml"
+config = load_pipeline_config(CONFIG_PATH)
 
 print(f"Model: {config.model.model_name}")
 print(f"Task: {config.model.task_type}")
@@ -46,51 +53,28 @@ print(f"Epochs: {config.training.max_epochs}")
 
 from src.engine import TrainingEngine
 
-engine = TrainingEngine(config)
+result = TrainingEngine(config).train()
+RUN_ID = result.run_id
 
-# Auto-detect GPUs; set num_gpus explicitly to override
-metrics = engine.train()
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Review Metrics
-
-# COMMAND ----------
-
-print("\nTraining complete. Metrics:")
-for k, v in sorted(metrics.items()):
-    if isinstance(v, float):
-        print(f"  {k}: {v:.4f}")
-    else:
-        print(f"  {k}: {v}")
+print(f"MLflow run: {RUN_ID}")
+for k, v in sorted(result.metrics.items()):
+    print(f"  {k}: {v:.4f}" if isinstance(v, float) else f"  {k}: {v}")
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## Quick Generation Test
+# MAGIC Loads the model back from the MLflow run, the same way the evaluate and
+# MAGIC register stages do.
 
 # COMMAND ----------
 
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from src.evaluation.engine import EvaluationEngine
 
-model_path = os.path.join(config.training.checkpoint_dir, "final_model")
-tokenizer = AutoTokenizer.from_pretrained(model_path)
-model = AutoModelForCausalLM.from_pretrained(
-    model_path,
-    torch_dtype=torch.bfloat16,
-    device_map="auto",
+generation = EvaluationEngine(config).evaluate_generation(
+    prompts=["Explain the concept of fine-tuning in machine learning."],
+    run_id=RUN_ID,
 )
-
-prompt = "Explain the concept of fine-tuning in machine learning."
-messages = [{"role": "user", "content": prompt}]
-text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-inputs = tokenizer(text, return_tensors="pt").to(model.device)
-
-with torch.no_grad():
-    outputs = model.generate(**inputs, max_new_tokens=256, temperature=0.7, do_sample=True)
-
-response = tokenizer.decode(outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
-print(f"Prompt: {prompt}")
-print(f"Response: {response}")
+for g in generation["generations"]:
+    print(f"Prompt: {g['prompt']}")
+    print(f"Response: {g['response']}")

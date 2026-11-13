@@ -1,71 +1,40 @@
-"""Entry point for SLM fine-tuning.
+# Databricks notebook source
+# MAGIC %md
+# MAGIC # Train
+# MAGIC
+# MAGIC Job task: fine-tune a small language model and log it to MLflow. Runs on
+# MAGIC AI Runtime (serverless GPU); on a multi-GPU accelerator it trains one
+# MAGIC process per GPU.
+# MAGIC
+# MAGIC **Parameters:** `config_path` — pipeline config, relative to the project root.
+# MAGIC
+# MAGIC **Task values set:** `run_id` — the MLflow run holding the trained model.
 
-Usage (auto — one process per visible GPU on this node):
-    python jobs/train.py --config_path configs/sft_phi3_config.yaml
-    python jobs/train.py --config_path configs/sft_phi3_config.yaml --num_gpus 4
+# COMMAND ----------
 
-Usage (force a single process, e.g. for debugging):
-    python jobs/train.py --config_path configs/... --distributed single
+# MAGIC %pip install -q -r ../requirements.txt
 
-Usage (multi-node, spreading processes over Spark workers):
-    python jobs/train.py --config_path configs/... --distributed multinode
+# COMMAND ----------
 
-Note: real DDP needs one process per GPU. Running this without a launcher and
-letting HF Trainer see several GPUs would give DataParallel instead, so
-multi-GPU always goes through TorchDistributor.
-"""
+dbutils.library.restartPython()
 
-from __future__ import annotations
+# COMMAND ----------
 
-import argparse
+import json
 import os
 import sys
-from pathlib import Path
 
-# Support running this file straight from a repo checkout (Databricks Repos,
-# ``python jobs/train.py``) as well as from an installed package.  Only the
-# project root goes on the path — adding ``src/`` too would make both
-# ``import config`` and ``import src.config`` resolve, to two different module
-# objects.  Runtime dependencies are installed from main(), not at import time.
-try:
-    _this_file = Path(__file__).resolve()
-except NameError:  # Databricks spark_python_task exec() context
-    _this_file = Path(sys.argv[0]).resolve() if sys.argv else Path(os.getcwd())
+sys.path.insert(0, os.path.abspath(".."))
 
-_PROJECT_ROOT = _this_file.parent.parent
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
+from src import pipeline
 
+dbutils.widgets.text("config_path", "configs/sft_phi3_config.yaml")
 
-def main():
-    from src.utils.environment import ensure_runtime_requirements
+result = pipeline.train(dbutils.widgets.get("config_path"))
 
-    ensure_runtime_requirements(_PROJECT_ROOT / "requirements_runtime.txt")
+print(f"MLflow run: {result['run_id']}")
+for key, value in sorted(result["metrics"].items()):
+    print(f"  {key}: {value}")
 
-    parser = argparse.ArgumentParser(description="Fine-tune a small language model")
-    parser.add_argument("--config_path", type=str, required=True,
-                        help="Path to YAML config file")
-    parser.add_argument("--num_gpus", type=int, default=None,
-                        help="Number of GPUs (auto-detected if omitted)")
-    parser.add_argument("--distributed", type=str, default="auto",
-                        choices=["auto", "single", "local", "multinode"],
-                        help="'auto' (default): one process per visible GPU on "
-                             "this node. 'single': force one process. 'local': "
-                             "single-node multi-process DDP. 'multinode': "
-                             "distribute across Spark workers.")
-    args = parser.parse_args()
-
-    from src.config.schema import load_config
-    from src.engine import TrainingEngine
-
-    config = load_config(args.config_path)
-    engine = TrainingEngine(config)
-    metrics = engine.train(num_gpus=args.num_gpus, distributed_mode=args.distributed)
-
-    print("\nTraining complete. Metrics:")
-    for k, v in sorted(metrics.items()):
-        print(f"  {k}: {v:.4f}" if isinstance(v, float) else f"  {k}: {v}")
-
-
-if __name__ == "__main__":
-    main()
+dbutils.jobs.taskValues.set(key="run_id", value=result["run_id"])
+dbutils.notebook.exit(json.dumps({"run_id": result["run_id"]}))

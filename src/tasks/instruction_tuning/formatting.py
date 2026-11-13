@@ -74,18 +74,18 @@ def load_dataset_from_config(data_cfg: DataConfig, split: str = "train") -> Data
 def load_dataset_from_table(table: str) -> Dataset:
     """Read a Unity Catalog table into a HuggingFace Dataset.
 
-    Requires a Spark session, so this only works on Databricks (or anywhere
-    else with Spark configured).
+    AI Runtime has no local Spark; the table is read over Spark Connect
+    through Databricks Connect, which the GPU environment ships with.
     """
     try:
-        from pyspark.sql import SparkSession
+        from databricks.connect import DatabricksSession
     except ImportError as exc:
         raise RuntimeError(
-            f"Reading '{table}' needs PySpark, which is not available here. "
-            f"Use a file path instead when running off-cluster."
+            f"Reading '{table}' needs Databricks Connect, which is not "
+            f"available here. Use a file path instead when running off Databricks."
         ) from exc
 
-    spark = SparkSession.getActiveSession() or SparkSession.builder.getOrCreate()
+    spark = DatabricksSession.builder.getOrCreate()
     pdf = spark.read.table(table).toPandas()
 
     if pdf.empty:

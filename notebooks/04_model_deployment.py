@@ -3,17 +3,24 @@
 # MAGIC # 04 — Model Deployment
 # MAGIC
 # MAGIC Register a fine-tuned SLM to Unity Catalog and deploy to Model Serving.
+# MAGIC
+# MAGIC Attach this notebook to **AI Runtime** (serverless GPU): registration loads
+# MAGIC the model, and a model trained in 4-bit needs the GPU kernels to load.
 
 # COMMAND ----------
 
-# MAGIC %pip install -r ../requirements_runtime.txt
-# MAGIC %restart_python
+# MAGIC %pip install -q -r ../requirements.txt
 
 # COMMAND ----------
 
-import sys, os
-sys.path.insert(0, os.path.join(os.getcwd(), ".."))
-sys.path.insert(0, os.path.join(os.getcwd(), "..", "src"))
+dbutils.library.restartPython()
+
+# COMMAND ----------
+
+import os
+import sys
+
+sys.path.insert(0, os.path.abspath(".."))
 
 # COMMAND ----------
 
@@ -21,8 +28,6 @@ sys.path.insert(0, os.path.join(os.getcwd(), "..", "src"))
 # MAGIC ## Configuration
 
 # COMMAND ----------
-
-import mlflow
 
 RUN_ID = "<your_mlflow_run_id>"
 
@@ -40,11 +45,12 @@ ENDPOINT_NAME = "phi3-sft-endpoint"
 
 from src.serving.registration import register_model
 
+# "latest" cannot be used as an alias: the registry reserves it.
 reg_result = register_model(
     run_id=RUN_ID,
     registered_model_name=MODEL_NAME,
     task_type="instruction_tuning",
-    aliases=["champion", "latest"],
+    aliases=["champion"],
     tags={"model_family": "phi-3", "task": "instruction_tuning"},
     test_prompt="Explain the concept of fine-tuning.",
 )

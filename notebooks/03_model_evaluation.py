@@ -3,30 +3,37 @@
 # MAGIC # 03 — Model Evaluation
 # MAGIC
 # MAGIC Evaluate a fine-tuned SLM: perplexity, generation quality, and latency benchmarks.
+# MAGIC
+# MAGIC Attach this notebook to **AI Runtime** (serverless GPU).
 
 # COMMAND ----------
 
-# MAGIC %pip install -r ../requirements_runtime.txt rouge-score
-# MAGIC %restart_python
+# MAGIC %pip install -q -r ../requirements.txt
 
 # COMMAND ----------
 
-import sys, os
-sys.path.insert(0, os.path.join(os.getcwd(), ".."))
-sys.path.insert(0, os.path.join(os.getcwd(), "..", "src"))
+dbutils.library.restartPython()
 
 # COMMAND ----------
 
-from src.config.schema import load_config
+import os
+import sys
+
+sys.path.insert(0, os.path.abspath(".."))
+
+# COMMAND ----------
+
 from src.evaluation.engine import EvaluationEngine
+from src.pipeline import load_pipeline_config
 
-CONFIG_PATH = "../configs/sft_phi3_config.yaml"
-config = load_config(CONFIG_PATH)
+CONFIG_PATH = "configs/sft_phi3_config.yaml"
+config = load_pipeline_config(CONFIG_PATH)
 
 engine = EvaluationEngine(config)
 
-# Set the model path from your training run
-MODEL_PATH = os.path.join(config.training.checkpoint_dir, "final_model")
+# The MLflow run that holds the trained model (from 02_model_training, or the
+# pipeline job's train task).
+RUN_ID = "<your_mlflow_run_id>"
 
 # COMMAND ----------
 
@@ -35,7 +42,7 @@ MODEL_PATH = os.path.join(config.training.checkpoint_dir, "final_model")
 
 # COMMAND ----------
 
-ppl_result = engine.evaluate_perplexity(model_path=MODEL_PATH)
+ppl_result = engine.evaluate_perplexity(run_id=RUN_ID)
 print(f"Perplexity: {ppl_result['perplexity']:.2f}")
 print(f"Avg loss: {ppl_result['avg_loss']:.4f}")
 print(f"Tokens evaluated: {ppl_result['total_tokens']}")
@@ -54,10 +61,7 @@ test_prompts = [
     "What are the benefits of using Databricks for ML?",
 ]
 
-gen_result = engine.evaluate_generation(
-    prompts=test_prompts,
-    model_path=MODEL_PATH,
-)
+gen_result = engine.evaluate_generation(prompts=test_prompts, run_id=RUN_ID)
 
 for g in gen_result["generations"]:
     print(f"\nPrompt: {g['prompt']}")
@@ -71,7 +75,7 @@ for g in gen_result["generations"]:
 
 # COMMAND ----------
 
-bench_result = engine.benchmark(model_path=MODEL_PATH, num_iterations=20)
+bench_result = engine.benchmark(run_id=RUN_ID, num_iterations=20)
 
 print(f"Tokens/sec: {bench_result['tokens_per_second']:.1f}")
 print(f"Latency p50: {bench_result['latency_per_generation_ms']['p50']:.1f} ms")

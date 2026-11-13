@@ -4,11 +4,16 @@
 # MAGIC
 # MAGIC Prepare and validate fine-tuning data for the SLM accelerator.
 # MAGIC Supports Alpaca, ShareGPT, Preference (DPO), and CSV classification formats.
+# MAGIC
+# MAGIC Needs no GPU: run it on serverless CPU.
 
 # COMMAND ----------
 
-# MAGIC %pip install pyyaml datasets
-# MAGIC %restart_python
+# MAGIC %pip install -q datasets pyyaml -c ../requirements.txt
+
+# COMMAND ----------
+
+dbutils.library.restartPython()
 
 # COMMAND ----------
 

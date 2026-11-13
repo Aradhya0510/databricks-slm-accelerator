@@ -67,27 +67,31 @@ with tab_launch:
         st.markdown(f"**Quantization:** {quant}")
         st.markdown(f"**LoRA Rank:** {lora_r}")
 
-    section_title("Cluster Settings")
-    job_name = st.text_input(
-        "Job Name", value=f"slm-{task}-{model_name.split('/')[-1]}"
+    section_title("Pipeline Job")
+    st.caption(
+        "Runs the train → evaluate → register → deploy job that "
+        "`databricks bundle deploy` creates. Training runs on AI Runtime "
+        "(serverless GPU); the accelerator is set in the bundle."
     )
-    project_path = st.text_input(
-        "Project Path (Workspace)",
-        value="/Workspace/Users/<email>/databricks-slm-accelerator",
-    )
-    config_path = StateManager.get("config_path", "")
-    config_path = st.text_input("Config Path", value=config_path)
+    try:
+        pipeline_jobs = _get_client().list_pipeline_jobs()
+    except Exception as e:
+        pipeline_jobs = []
+        st.error(f"Could not list pipeline jobs: {e}")
 
-    use_existing = st.checkbox("Use existing cluster")
-    cluster_id = ""
-    if use_existing:
-        cluster_id = st.text_input("Cluster ID")
-
-    num_gpus = (
-        st.number_input(
-            "Number of GPUs (0 = auto)", min_value=0, max_value=8, value=0
+    if not pipeline_jobs:
+        st.warning(
+            "No deployed pipeline job found. Deploy the bundle first: "
+            "`databricks bundle deploy --target dev`."
         )
-        or None
+        st.stop()
+
+    job_labels = {f"{j['name']} ({j['job_id']})": j for j in pipeline_jobs}
+    selected_job = job_labels[st.selectbox("Job", options=list(job_labels))]
+
+    config_path = StateManager.get("config_path", "")
+    config_path = st.text_input(
+        "Config Path (relative to the project root)", value=config_path,
     )
 
     st.markdown('<div style="height:16px;"></div>', unsafe_allow_html=True)
@@ -95,26 +99,19 @@ with tab_launch:
         if not config_path:
             st.error("Config path is required.")
         else:
-            with st.status("Creating and launching job...", expanded=True) as status:
+            with st.status("Launching pipeline run...", expanded=True) as status:
                 try:
-                    st.write("Initializing Databricks client...")
                     client = _get_client()
-                    st.write("Creating job definition...")
-                    job_id = client.create_training_job(
-                        job_name=job_name,
+                    run_id = client.run_pipeline(
+                        job_id=selected_job["job_id"],
                         config_path=config_path,
-                        project_path=project_path,
-                        num_gpus=num_gpus,
-                        existing_cluster_id=cluster_id or None,
                     )
-                    st.write("Submitting run...")
-                    run_id = client.run_job(job_id)
                     StateManager.set_active_training_run(run_id)
                     StateManager.add_training_run(
                         {
                             "run_id": run_id,
-                            "job_id": job_id,
-                            "job_name": job_name,
+                            "job_id": selected_job["job_id"],
+                            "job_name": selected_job["name"],
                             "model": model_name,
                             "task": task,
                             "status": "RUNNING",

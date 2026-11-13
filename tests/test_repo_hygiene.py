@@ -1,7 +1,7 @@
 """Repo-wide invariants that nothing else checks.
 
 Notebooks and Streamlit pages are never imported by the rest of the suite, so
-a syntax error in them ships silently. These are cheap and catch that.
+a mistake in them ships silently. These are cheap and catch that.
 """
 
 from __future__ import annotations
@@ -33,35 +33,47 @@ def test_file_parses(path):
     ast.parse(path.read_text(), filename=str(path))
 
 
-JOB_FILES = sorted((REPO / "jobs").glob("*.py"))
+NOTEBOOKS = sorted(
+    [*(REPO / "jobs").glob("*.py"), *(REPO / "notebooks").glob("*.py")]
+)
+
+_HEADER = "# Databricks notebook source"
+_CELL = "# COMMAND ----------"
 
 
-@pytest.mark.parametrize("path", JOB_FILES, ids=lambda p: p.name)
-def test_job_entry_points_have_no_import_side_effects(path):
-    """Importing a job module must not install packages or hit the network.
-
-    The entry points used to shell out to pip at module scope, before
-    argparse and once per process under any multi-process launch.
-    """
-    tree = ast.parse(path.read_text(), filename=str(path))
-
-    for node in tree.body:
-        # Skip definitions: what happens inside main() runs on invocation,
-        # not on import, and calling the installer from there is the fix.
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            continue
-
-        dumped = ast.dump(node)
-        assert "check_call" not in dumped, (
-            f"{path.name} runs a subprocess at import time"
-        )
-        assert "ensure_runtime_requirements" not in dumped, (
-            f"{path.name} installs requirements at import time"
-        )
+def _cells(path):
+    return path.read_text().removeprefix(_HEADER).split(_CELL)
 
 
-@pytest.mark.parametrize("path", JOB_FILES, ids=lambda p: p.name)
-def test_job_entry_points_do_not_add_src_to_the_path(path):
+@pytest.mark.parametrize("path", NOTEBOOKS, ids=lambda p: str(p.relative_to(REPO)))
+def test_notebooks_are_databricks_source(path):
+    """Without the header, a bundle deploys the file as a plain script, and a
+    notebook task pointed at it fails to start."""
+    assert path.read_text().startswith(_HEADER), f"{path.name} lacks the notebook header"
+
+
+@pytest.mark.parametrize("path", NOTEBOOKS, ids=lambda p: str(p.relative_to(REPO)))
+def test_magic_cells_hold_only_magic(path):
+    """A plain Python line ahead of ``# MAGIC %pip`` in the same cell turns the
+    whole cell into Python, and the install silently never runs."""
+    for cell in _cells(path):
+        lines = [l for l in cell.strip().splitlines() if l.strip()]
+        if any(l.startswith("# MAGIC %") for l in lines):
+            stray = [l for l in lines if not l.startswith("# MAGIC")]
+            assert not stray, f"{path.name}: non-magic line in a magic cell: {stray[0]!r}"
+
+
+@pytest.mark.parametrize("path", NOTEBOOKS, ids=lambda p: str(p.relative_to(REPO)))
+def test_notebooks_install_from_the_pinned_requirements(path):
+    """Every install goes through requirements.txt, as the full set or as
+    constraints, so a notebook cannot drift onto versions nothing tested."""
+    for line in path.read_text().splitlines():
+        if line.startswith("# MAGIC %pip install"):
+            assert "requirements.txt" in line, f"{path.name}: unpinned install: {line!r}"
+
+
+@pytest.mark.parametrize("path", NOTEBOOKS, ids=lambda p: str(p.relative_to(REPO)))
+def test_notebooks_do_not_add_src_to_the_path(path):
     """Adding both the root and src/ makes one module importable under two names.
 
     ``import config`` and ``import src.config`` would then resolve to two

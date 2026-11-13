@@ -23,7 +23,7 @@ from ...config.schema import PipelineConfig
 from ...model.loader import load_model_and_tokenizer
 from ...model.peft_utils import apply_peft
 from ...registry import TaskRegistry
-from ...utils.environment import resolve_precision, warmup_kwargs
+from ...utils.environment import resolve_precision
 from ..base import BaseTask
 from .formatting import load_classification_dataset, tokenize_classification_dataset
 
@@ -122,7 +122,7 @@ class TextClassificationTask(BaseTask):
             gradient_checkpointing_kwargs={"use_reentrant": False},
             learning_rate=config.training.learning_rate,
             weight_decay=config.training.weight_decay,
-            **warmup_kwargs(config.training.warmup_ratio, TrainingArguments),
+            warmup_steps=config.training.warmup_ratio,
             lr_scheduler_type=config.training.lr_scheduler_type,
             max_grad_norm=config.training.max_grad_norm,
             bf16=(precision == "bf16"),

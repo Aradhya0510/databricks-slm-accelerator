@@ -1,4 +1,4 @@
-"""Environment helpers: staging paths, rank identity, precision, attention."""
+"""Environment helpers: rank identity, precision, attention."""
 
 from __future__ import annotations
 
@@ -9,42 +9,8 @@ from src.utils.environment import (
     is_rank_zero,
     local_rank,
     resolve_precision,
-    stage_data_to_local,
-    volumes_staging_path,
     world_size,
 )
-
-
-@pytest.mark.parametrize(
-    "volumes_path, expected",
-    [
-        ("/Volumes/main/slm/data/", "/tmp/staged/main/slm/data"),
-        ("/Volumes/users/east/sft", "/tmp/staged/users/east/sft"),
-        ("/Volumes/mount/x", "/tmp/staged/mount/x"),
-        ("/Volumes/sales/y", "/tmp/staged/sales/y"),
-    ],
-)
-def test_staging_path_preserves_every_segment(volumes_path, expected):
-    assert volumes_staging_path(volumes_path, "/tmp/staged") == expected
-
-
-def test_non_volumes_paths_pass_through():
-    assert stage_data_to_local("/dbfs/foo") == "/dbfs/foo"
-    assert stage_data_to_local("relative/path") == "relative/path"
-
-
-def test_stage_copies_a_file(tmp_path, monkeypatch):
-    source = tmp_path / "Volumes" / "main" / "train.jsonl"
-    source.parent.mkdir(parents=True)
-    source.write_text('{"a": 1}')
-
-    monkeypatch.setattr(
-        "src.utils.environment._VOLUMES_ROOT", str(tmp_path / "Volumes")
-    )
-    out = stage_data_to_local("/Volumes/main/train.jsonl", str(tmp_path / "staged"))
-
-    assert out == str(tmp_path / "staged" / "main" / "train.jsonl")
-    assert (tmp_path / "staged" / "main" / "train.jsonl").read_text() == '{"a": 1}'
 
 
 def test_rank_zero_uses_global_rank(monkeypatch):

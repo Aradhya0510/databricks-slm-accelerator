@@ -20,16 +20,20 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          # Matches the AI Runtime GPU environment.
+          python-version: "3.12"
           cache: pip
 
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          # CPU-only torch keeps the CI image small; the suite needs no GPU.
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          # The CPU build of the pinned torch keeps the CI image small; the
+          # suite needs no GPU. requirements.txt then sees torch as satisfied.
+          pip install "torch==$(grep -oP '^torch==\K.*' requirements.txt)" \
+            --index-url https://download.pytorch.org/whl/cpu
+          # The same pinned set every notebook installs on AI Runtime.
+          pip install -r requirements.txt
           pip install -e ".[dev]"
-          pip install peft trl
 
       - name: Run tests
         # The suite is offline by design: models are built from configs in
@@ -39,12 +43,3 @@ jobs:
           HF_HUB_OFFLINE: "1"
           MLFLOW_ALLOW_FILE_STORE: "true"
         run: pytest -v --cov=src --cov-report=term-missing
-
-      - name: Check job entry points have no import side effects
-        # Importing a job module must not shell out to pip or touch the network.
-        run: |
-          for f in jobs/*.py; do
-            if grep -q "check_call" "$f" && ! grep -q "def main" <(head -40 "$f"); then
-              echo "$f may install packages at import time"; exit 1
-            fi
-          done

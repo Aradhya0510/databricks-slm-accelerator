@@ -1,22 +1,15 @@
-"""Databricks environment helpers — GPU detection, NCCL setup, data staging."""
+"""Runtime helpers — process rank, GPU detection, precision and attention."""
 
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
-import sys
-from pathlib import Path
 from typing import Optional
 
 
 # ---------------------------------------------------------------------------
-# Environment detection
+# Process identity
 # ---------------------------------------------------------------------------
-
-def is_databricks() -> bool:
-    return os.getenv("DATABRICKS_RUNTIME_VERSION") is not None
-
 
 def is_rank_zero() -> bool:
     """True when this process is global rank 0 (or not running distributed).
@@ -34,7 +27,7 @@ def local_rank() -> int:
 
 
 def is_distributed_launch() -> bool:
-    """True when a launcher (TorchDistributor, torchrun) set up the process group."""
+    """True inside a worker that a launcher (``@distributed``, torchrun) started."""
     return os.environ.get("WORLD_SIZE") is not None and os.environ.get("RANK") is not None
 
 
@@ -73,15 +66,6 @@ def get_gpu_count() -> int:
         return 0
 
 
-def setup_nccl_env() -> None:
-    """Configure NCCL environment variables for Databricks multi-GPU networking."""
-    os.environ.setdefault("NCCL_DEBUG", "WARN")
-    os.environ.setdefault("NCCL_SOCKET_IFNAME", "eth0")
-    os.environ.setdefault("NCCL_IB_DISABLE", "1")
-    os.environ.setdefault("NCCL_P2P_LEVEL", "NVL")
-    os.environ.setdefault("NCCL_SHM_DISABLE", "1")
-
-
 # ---------------------------------------------------------------------------
 # Mixed precision
 # ---------------------------------------------------------------------------
@@ -89,8 +73,8 @@ def setup_nccl_env() -> None:
 def resolve_precision(requested: str = "auto") -> str:
     """Resolve a precision setting against the hardware actually present.
 
-    ``bf16`` needs Ampere or newer; V100 and T4 are still common on Databricks
-    GPU pools, and ``bf16: true`` is the shipped default in every config.
+    ``bf16`` needs Ampere or newer. Every AI Runtime accelerator has it, but
+    the same code runs on CPU in CI, where neither half precision is usable.
 
     Returns one of ``"bf16"``, ``"fp16"`` or ``"fp32"``.
     """
@@ -121,9 +105,8 @@ def resolve_precision(requested: str = "auto") -> str:
 def resolve_attn_implementation(requested: str = "auto") -> Optional[str]:
     """Pick an attention implementation that is actually installed and usable.
 
-    FlashAttention-2 used to be hardcoded on whenever CUDA was present, with
-    no capability check and no fallback: it is not part of DBR ML, and it
-    needs Ampere or newer.  ``auto`` tries FA2, then SDPA, then eager.
+    FlashAttention-2 is not part of the AI Runtime environment, and it needs
+    Ampere or newer.  ``auto`` tries FA2, then SDPA, then eager.
     """
     import torch
 
@@ -142,99 +125,3 @@ def resolve_attn_implementation(requested: str = "auto") -> Optional[str]:
         pass
 
     return "sdpa"
-
-
-# ---------------------------------------------------------------------------
-# Trainer argument compatibility
-# ---------------------------------------------------------------------------
-
-def warmup_kwargs(ratio: float, config_cls: type) -> dict:
-    """Express a warmup ratio as the keyword ``config_cls`` actually accepts.
-
-    transformers 5 dropped ``warmup_ratio`` and folded it into ``warmup_steps``,
-    which reads a float in [0, 1) as a ratio.  On 4.x the two coexist and a
-    float ``warmup_steps`` would be taken as a literal step count instead.
-    """
-    import inspect
-
-    params = inspect.signature(config_cls.__init__).parameters
-    field = "warmup_ratio" if "warmup_ratio" in params else "warmup_steps"
-    return {field: ratio}
-
-
-# ---------------------------------------------------------------------------
-# Data staging for /Volumes/ → local disk
-# ---------------------------------------------------------------------------
-
-_VOLUMES_ROOT = "/Volumes"
-
-
-def volumes_staging_path(volumes_path: str, local_root: str) -> str:
-    """Map a ``/Volumes/...`` path to its deterministic local staging path.
-
-    Split out so the path arithmetic can be tested without touching the
-    filesystem.  Uses ``removeprefix`` rather than ``lstrip``: ``lstrip``
-    strips *characters*, so ``lstrip("/Volumes/")`` would eat into the first
-    real path segment and could collide distinct sources onto one directory.
-    """
-    relative = volumes_path.removeprefix("/Volumes/").rstrip("/")
-    return os.path.join(local_root, relative)
-
-
-def stage_data_to_local(path: str, local_root: str = "/tmp/staged_data") -> str:
-    """Copy a /Volumes/ path to local disk so worker processes can read it.
-
-    Returns the original path unchanged if it is not a /Volumes/ path.
-    """
-    if not path.startswith("/Volumes/"):
-        return path
-
-    local_path = volumes_staging_path(path, local_root)
-
-    if os.path.exists(local_path):
-        return local_path
-
-    # ``_VOLUMES_ROOT`` is indirected so tests can rebase the source tree.
-    src = Path(_VOLUMES_ROOT) / path.removeprefix("/Volumes/").rstrip("/")
-    dst = Path(local_path)
-
-    if src.is_file():
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(str(src), str(dst))
-    elif src.is_dir():
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(str(src), str(dst))
-    else:
-        return path
-
-    print(f"Staged {path} → {local_path}")
-    return local_path
-
-
-# ---------------------------------------------------------------------------
-# Runtime dependency installation
-# ---------------------------------------------------------------------------
-
-def ensure_runtime_requirements(requirements_file: str | Path) -> None:
-    """Install ``requirements_file`` if it exists, once, on rank 0 only.
-
-    Databricks job clusters should normally declare these as cluster libraries;
-    this is the fallback for running the entry points from a checkout.  Set
-    ``SLM_SKIP_RUNTIME_INSTALL=1`` to opt out.
-
-    Called explicitly from ``main()`` — never at import time, so importing a
-    job module has no side effects.
-    """
-    if os.environ.get("SLM_SKIP_RUNTIME_INSTALL"):
-        return
-    if not is_rank_zero():
-        return
-
-    path = Path(requirements_file)
-    if not path.exists():
-        return
-
-    subprocess.check_call(
-        [sys.executable, "-m", "pip", "install", "-q", "-r", str(path)],
-        stdout=subprocess.DEVNULL,
-    )
