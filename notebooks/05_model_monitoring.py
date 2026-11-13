@@ -3,17 +3,23 @@
 # MAGIC # 05 — Model Monitoring
 # MAGIC
 # MAGIC Monitor a deployed SLM endpoint: health, request metrics, and token usage.
+# MAGIC
+# MAGIC Needs no GPU: run it on serverless CPU.
 
 # COMMAND ----------
 
-# MAGIC %pip install -r ../requirements_runtime.txt
-# MAGIC %restart_python
+# MAGIC %pip install -q pydantic pyyaml databricks-sdk -c ../requirements.txt
 
 # COMMAND ----------
 
-import sys, os
-sys.path.insert(0, os.path.join(os.getcwd(), ".."))
-sys.path.insert(0, os.path.join(os.getcwd(), "..", "src"))
+dbutils.library.restartPython()
+
+# COMMAND ----------
+
+import os
+import sys
+
+sys.path.insert(0, os.path.abspath(".."))
 
 # COMMAND ----------
 

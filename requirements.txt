@@ -1,20 +1,34 @@
-# Local Development Dependencies
+# ---------------------------------------------------------------------------
+# Runtime dependencies for Databricks AI Runtime (serverless GPU, environment 6)
 #
-# Install the project for development:
-#     pip install -e ".[dev]"
+# Every notebook installs this file with %pip before importing the project.
+# The Standard environment ships CUDA but not torch or the Hugging Face stack,
+# and AI Runtime notebook jobs do not support adding dependencies through the
+# job's environment, so the notebook is the one place they can come from.
 #
-# Kept for compatibility with existing docs that reference it.
-
-# Core runtime deps (also installed on the cluster by jobs/*.py entry points):
--r requirements_runtime.txt
-
-# Evaluation
-rouge-score>=0.1.2
-
-# Dev / testing
-pytest>=7.0
-pytest-cov>=4.0
-
-# Config
-pyyaml>=6.0
-pydantic>=2.0
+# Pinned to a set resolved together on an AI Runtime A10 node. Upgrade them
+# together: trl, peft and transformers move in lockstep.
+#
+# flash-attn is deliberately absent. It needs a compiled CUDA extension; the
+# loader probes for it and falls back to SDPA.
+# ---------------------------------------------------------------------------
+torch==2.15.0
+transformers==5.22.2
+trl==1.17.1
+peft==0.21.2
+bitsandbytes==0.50.2
+accelerate==1.15.0
+datasets==5.2.0
+sentencepiece==0.2.3
+protobuf==6.33.5
+mlflow==3.18.0
+# datasets, mlflow and trl all accept a newer pyarrow and would pull 26, but
+# the environment's own databricks-connect, which Spark Connect runs through,
+# requires pyarrow<25.
+pyarrow==24.0.0
+pydantic==2.13.3
+pyyaml==6.0.3
+rouge-score==0.1.2
+# Pinned rather than taken from whichever environment a task lands on, so the
+# serving API is the one the code is written against on CPU and GPU alike.
+databricks-sdk==0.122.0

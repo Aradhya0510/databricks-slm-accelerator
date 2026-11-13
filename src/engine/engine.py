@@ -3,15 +3,18 @@
 Each Task creates and returns the appropriate TRL/HF Trainer directly.
 The engine orchestrates the flow: config -> task -> model -> data -> trainer -> train.
 
-Single-node multi-GPU goes through ``TorchDistributor(local_mode=True)``, which
-launches one process per GPU so HF Trainer runs real DDP.  Running this as a
-plain process with several GPUs visible would give DataParallel instead.
+Training runs on whatever AI Runtime accelerator the notebook is attached to.
+A single GPU trains in-process; a multi-GPU node (8xH100, 8xB300) goes through
+``@distributed``, which launches one process per GPU so HF Trainer runs real
+DDP.  Running one process with several GPUs visible would give DataParallel.
 """
 
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Literal, Optional
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any, Dict, Optional
 
 from ..config.schema import PipelineConfig
 from ..registry import TaskRegistry
@@ -20,8 +23,6 @@ from ..utils.environment import (
     get_gpu_count,
     is_distributed_launch,
     is_rank_zero,
-    setup_nccl_env,
-    stage_data_to_local,
     world_size,
 )
 from .callbacks import EarlyStoppingCallback, VolumeCheckpointCallback
@@ -32,9 +33,19 @@ _TASK_MODULES = {
     "text_classification": "src.tasks.text_classification",
 }
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+@dataclass
+class TrainingResult:
+    """What a training run produced: the MLflow run that holds it, and metrics."""
+
+    run_id: Optional[str]
+    metrics: Dict[str, Any] = field(default_factory=dict)
+
 
 class TrainingEngine:
-    """High-level orchestrator: config in -> metrics out."""
+    """High-level orchestrator: config in -> trained, logged model out."""
 
     def __init__(self, config: PipelineConfig):
         self.config = config
@@ -42,45 +53,27 @@ class TrainingEngine:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
-    def train(
-        self,
-        num_gpus: Optional[int] = None,
-        distributed_mode: Literal["auto", "single", "local", "multinode"] = "auto",
-    ) -> Dict[str, Any]:
-        """Run fine-tuning.
+    def train(self, num_gpus: Optional[int] = None) -> TrainingResult:
+        """Run fine-tuning on the GPUs attached to this process.
 
         Args:
-            num_gpus: GPUs to use.  Auto-detected when ``None``.
-            distributed_mode:
-                ``"auto"`` (default) — one process per visible GPU on this node.
-                ``"single"`` — force a single process.
-                ``"local"`` — single-node multi-process DDP.
-                ``"multinode"`` — distribute across Spark workers.
+            num_gpus: GPUs to train on. Defaults to every GPU on the node.
         """
+        # Already inside a launched worker: one process, one GPU.
+        if is_distributed_launch():
+            return self._train_fn()
+
         if num_gpus is None:
             num_gpus = get_gpu_count()
-        num_gpus = max(num_gpus, 1)
 
-        # Already inside a launched worker: just train, one process one GPU.
-        if is_distributed_launch():
-            return self._train_fn(num_gpus=1)
-
-        if distributed_mode == "auto":
-            distributed_mode = "local" if num_gpus > 1 else "single"
-
-        if distributed_mode == "single":
-            if num_gpus > 1:
-                # Pin to one GPU so HF Trainer cannot silently pick DataParallel.
-                os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
-            return self._train_fn(num_gpus=1)
-
-        self._stage_volumes_data()
-        return self._train_distributed(num_gpus, local_mode=(distributed_mode == "local"))
+        if num_gpus > 1:
+            return self._train_distributed(num_gpus)
+        return self._train_fn()
 
     # ------------------------------------------------------------------
     # Core training flow (one process, one device)
     # ------------------------------------------------------------------
-    def _train_fn(self, num_gpus: int = 1) -> Dict[str, Any]:
+    def _train_fn(self) -> TrainingResult:
         import importlib
 
         import mlflow
@@ -111,10 +104,6 @@ class TrainingEngine:
         if val_ds:
             print(f"Validation samples: {len(val_ds)}")
 
-        # --- NCCL env for Databricks networking ---
-        if world_size() > 1:
-            setup_nccl_env()
-
         # --- callbacks ---
         callbacks = []
         if config.training.volume_checkpoint_dir:
@@ -138,14 +127,27 @@ class TrainingEngine:
         # everything logged after trainer.train() (the final evaluate, and the
         # model artifacts) landed in fresh, orphaned runs, separate from the
         # metrics.
-        mlflow.set_experiment(config.mlflow.experiment_name)
-        run_ctx = mlflow.start_run(run_name=config.mlflow.run_name) if is_writer else None
+        #
+        # Under ``@distributed`` AI Runtime has already opened a run for the
+        # whole fan-out and hands it to every rank as MLFLOW_RUN_ID; starting
+        # a second one would split the model from its training metrics.
+        run_ctx = None
+        run_id = None
+        if is_writer:
+            managed_run_id = os.environ.get("MLFLOW_RUN_ID")
+            if managed_run_id:
+                run_ctx = mlflow.start_run(run_id=managed_run_id)
+                mlflow.set_tag("mlflow.runName", config.mlflow.run_name)
+            else:
+                mlflow.set_experiment(config.mlflow.experiment_name)
+                run_ctx = mlflow.start_run(run_name=config.mlflow.run_name)
+            run_id = run_ctx.info.run_id
 
         try:
             if is_writer:
                 if config.mlflow.tags:
                     mlflow.set_tags(config.mlflow.tags)
-                mlflow.log_params(self._run_params(num_gpus))
+                mlflow.log_params(self._run_params())
 
             trainer = task.create_trainer(
                 model=model,
@@ -182,9 +184,9 @@ class TrainingEngine:
             if run_ctx is not None:
                 mlflow.end_run()
 
-        return metrics
+        return TrainingResult(run_id=run_id, metrics=metrics)
 
-    def _run_params(self, num_gpus: int) -> Dict[str, Any]:
+    def _run_params(self) -> Dict[str, Any]:
         """Parameters worth being able to find a run by, later."""
         config = self.config
         return {
@@ -200,48 +202,45 @@ class TrainingEngine:
             "learning_rate": config.training.learning_rate,
             "max_seq_length": config.data.max_seq_length,
             "completion_only_loss": config.training.completion_only_loss,
-            "num_gpus": num_gpus,
-            "world_size": world_size(),
+            "num_gpus": world_size(),
             "seed": config.training.seed,
         }
 
     # ------------------------------------------------------------------
-    # TorchDistributor paths
+    # Multi-GPU: one process per GPU via AI Runtime's @distributed
     # ------------------------------------------------------------------
-    def _train_distributed(self, num_gpus: int, local_mode: bool) -> Dict[str, Any]:
-        """Launch one process per GPU via TorchDistributor."""
+    def _train_distributed(self, num_gpus: int) -> TrainingResult:
+        import mlflow
+        from databricks.air import distributed
+
         config_dict = self.config.model_dump()
+        project_root = str(_PROJECT_ROOT)
 
-        def train_fn():
-            import os
+        # Nested so it is pickled by value: each rank is a fresh process that
+        # has not imported this package, and may not have it on sys.path.
+        def train_worker(config_dict: Dict[str, Any], project_root: str) -> Dict[str, Any]:
+            import sys
 
-            os.environ.setdefault("NCCL_SOCKET_IFNAME", "eth0")
-            os.environ.setdefault("NCCL_IB_DISABLE", "1")
-            os.environ.setdefault("NCCL_P2P_LEVEL", "NVL")
-            os.environ.setdefault("NCCL_SHM_DISABLE", "1")
+            if project_root not in sys.path:
+                sys.path.insert(0, project_root)
 
             from src.config.schema import PipelineConfig
             from src.engine.engine import TrainingEngine
 
-            config = PipelineConfig(**config_dict)
-            return TrainingEngine(config)._train_fn(num_gpus=1)
+            return asdict(TrainingEngine(PipelineConfig(**config_dict))._train_fn())
 
-        from pyspark.ml.torch.distributor import TorchDistributor
+        # .distributed() opens its MLflow run in the active experiment.
+        mlflow.set_experiment(self.config.mlflow.experiment_name)
 
-        return TorchDistributor(
-            num_processes=num_gpus,
-            local_mode=local_mode,
-            use_gpu=True,
-        ).run(train_fn)
+        # The decorator's default timeout is three hours, which a real
+        # fine-tune can exceed; the job's own timeout bounds the run instead.
+        launcher = distributed(num_accelerators=num_gpus, timeout=None)(train_worker)
+        results = launcher.distributed(config_dict, project_root)
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-    def _stage_volumes_data(self) -> None:
-        cfg = self.config
-        if cfg.data.train_data_path:
-            cfg.data.train_data_path = stage_data_to_local(cfg.data.train_data_path)
-        if cfg.data.val_data_path:
-            cfg.data.val_data_path = stage_data_to_local(cfg.data.val_data_path)
-        if cfg.data.test_data_path:
-            cfg.data.test_data_path = stage_data_to_local(cfg.data.test_data_path)
+        # Every rank returns; only rank 0 opened the run and holds its id.
+        for result in results or []:
+            if result and result.get("run_id"):
+                return TrainingResult(**result)
+        raise RuntimeError(
+            f"Distributed training on {num_gpus} GPUs returned no MLflow run id."
+        )

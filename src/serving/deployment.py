@@ -22,19 +22,22 @@ def deploy_endpoint(
     from databricks.sdk.service.serving import (
         EndpointCoreConfigInput,
         ServedEntityInput,
+        ServingModelWorkloadType,
     )
 
     w = WorkspaceClient()
 
+    # The SDK serialises workload_type through its enum and rejects a bare
+    # string at request time, long after construction appeared to succeed.
     served_entity = ServedEntityInput(
         entity_name=registered_model_name,
         entity_version=model_version,
         workload_size=workload_size,
-        workload_type=workload_type,
+        workload_type=ServingModelWorkloadType(workload_type),
         scale_to_zero_enabled=scale_to_zero,
     )
 
-    config = EndpointCoreConfigInput(served_entities=[served_entity])
+    config = EndpointCoreConfigInput(name=endpoint_name, served_entities=[served_entity])
 
     try:
         endpoint = w.serving_endpoints.create(name=endpoint_name, config=config)
@@ -52,12 +55,17 @@ def deploy_endpoint(
     return {"endpoint_name": endpoint_name, "status": status}
 
 
+def _state_name(value: Any) -> Optional[str]:
+    """The name of an SDK state, which may arrive as an Enum or a plain string."""
+    return getattr(value, "value", value)
+
+
 def wait_for_ready(
     endpoint_name: str,
     timeout: int = 3600,
     poll_interval: int = 30,
 ) -> Dict[str, Any]:
-    """Poll until the endpoint is in READY state."""
+    """Poll until the endpoint is READY, failing fast if its update failed."""
     from databricks.sdk import WorkspaceClient
 
     w = WorkspaceClient()
@@ -66,15 +74,24 @@ def wait_for_ready(
     while time.time() - start < timeout:
         endpoint = w.serving_endpoints.get(endpoint_name)
         state = endpoint.state
+        ready = _state_name(state.ready) if state else None
+        config_update = _state_name(state.config_update) if state else None
 
-        if state and state.ready == "READY":
+        # The SDK returns these as Enums, which never compare equal to the
+        # bare string, so this loop used to run out its whole timeout.
+        if ready == "READY" and config_update != "IN_PROGRESS":
             print(f"Endpoint '{endpoint_name}' is READY.")
             return {"endpoint_name": endpoint_name, "state": "READY"}
 
-        config_update = state.config_update if state else None
+        if config_update == "UPDATE_FAILED":
+            raise RuntimeError(
+                f"Endpoint '{endpoint_name}' failed to deploy. Its served entity "
+                f"events and service logs hold the cause."
+            )
+
         print(
-            f"Endpoint state: ready={getattr(state, 'ready', '?')}, "
-            f"config_update={config_update} — waiting {poll_interval}s..."
+            f"Endpoint state: ready={ready}, config_update={config_update} "
+            f"— waiting {poll_interval}s..."
         )
         time.sleep(poll_interval)
 

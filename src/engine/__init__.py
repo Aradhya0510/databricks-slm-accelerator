@@ -1,3 +1,3 @@
-from .engine import TrainingEngine
+from .engine import TrainingEngine, TrainingResult
 
-__all__ = ["TrainingEngine"]
+__all__ = ["TrainingEngine", "TrainingResult"]

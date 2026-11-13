@@ -1,18 +1,18 @@
-# Databricks Asset Bundle for the SLM accelerator.
+# Databricks Asset Bundle for the SLM accelerator, on serverless compute.
 #
 # Deploy:   databricks bundle deploy --target dev
 # Run:      databricks bundle run slm_finetuning_pipeline --target dev
 #
-# The four jobs/ entry points become one task graph: train -> evaluate ->
-# register+deploy, with monitoring on its own schedule. Cluster specs live
-# here rather than being rebuilt by hand in the UI for every run.
+# The GPU stages (train, evaluate, register) run on AI Runtime, the serverless
+# GPU offering; deploying the endpoint and monitoring it run on serverless CPU.
+# Nothing here provisions a cluster.
 
 bundle:
   name: databricks-slm-accelerator
 
 variables:
   config_path:
-    description: Pipeline config, relative to the deployed bundle root.
+    description: Pipeline config, relative to the project root.
     default: configs/sft_phi3_config.yaml
   catalog:
     description: Unity Catalog catalog for the registered model.
@@ -26,12 +26,11 @@ variables:
   endpoint_name:
     description: Model Serving endpoint name.
     default: phi3-sft-endpoint
-  gpu_node_type:
-    description: GPU instance type. g5.12xlarge gives 4x A10G (96GB total).
-    default: g5.12xlarge
-  num_gpus:
-    description: GPUs available on the driver; one training process per GPU.
-    default: 4
+  accelerator:
+    description: >-
+      AI Runtime accelerator for the GPU stages. GPU_1xA10 and GPU_1xH100 train
+      in one process; GPU_8xH100 and GPU_8xB300 train one process per GPU.
+    default: GPU_1xA10
   monitoring_pause_status:
     description: Whether the monitoring schedule is active (PAUSED|UNPAUSED).
     default: PAUSED
@@ -39,113 +38,114 @@ variables:
 resources:
   jobs:
     slm_finetuning_pipeline:
-      name: "[${bundle.target}] SLM fine-tuning pipeline"
+      name: SLM fine-tuning pipeline
+      max_concurrent_runs: 1
 
-      # Single-node with several GPUs: TorchDistributor(local_mode=True)
-      # launches one process per GPU on the driver, so no workers are needed.
-      job_clusters:
-        - job_cluster_key: gpu_cluster
-          new_cluster:
-            spark_version: "17.3.x-gpu-ml-scala2.12"
-            node_type_id: ${var.gpu_node_type}
-            num_workers: 0
-            data_security_mode: SINGLE_USER
-            custom_tags:
-              ResourceClass: SingleNode
-            spark_conf:
-              spark.master: "local[*, 4]"
-              spark.databricks.cluster.profile: singleNode
+      # Job parameters reach every task as notebook widgets, so a single run
+      # can train a different config without redeploying the bundle.
+      parameters:
+        - name: config_path
+          default: ${var.config_path}
+        - name: model_name
+          default: ${var.catalog}.${var.schema}.${var.model_name}
+        - name: endpoint_name
+          default: ${var.endpoint_name}
+
+      environments:
+        - environment_key: ai_runtime
+          spec:
+            environment_version: "6"
 
       tasks:
         - task_key: train
-          job_cluster_key: gpu_cluster
-          spark_python_task:
-            python_file: jobs/train.py
-            parameters:
-              - "--config_path"
-              - "${var.config_path}"
-              - "--num_gpus"
-              - "${var.num_gpus}"
-          libraries:
-            - requirements: requirements_runtime.txt
+          notebook_task:
+            notebook_path: ./jobs/train.py
+          environment_key: ai_runtime
+          compute:
+            hardware_accelerator: ${var.accelerator}
+          # AI Runtime notebook jobs are capped at two days; long fine-tunes
+          # should checkpoint to a volume (training.volume_checkpoint_dir).
+          timeout_seconds: 172800
 
+        # Each GPU task provisions its own node, so the model is handed on as
+        # an MLflow run id rather than a local path.
         - task_key: evaluate
           depends_on:
             - task_key: train
-          job_cluster_key: gpu_cluster
-          spark_python_task:
-            python_file: jobs/evaluate.py
-            parameters:
-              - "--config_path"
-              - "${var.config_path}"
-          libraries:
-            - requirements: requirements_runtime.txt
+          notebook_task:
+            notebook_path: ./jobs/evaluate.py
+            base_parameters:
+              run_id: "{{tasks.train.values.run_id}}"
+          environment_key: ai_runtime
+          compute:
+            hardware_accelerator: ${var.accelerator}
+          timeout_seconds: 7200
 
-        - task_key: register_and_deploy
+        - task_key: register
           depends_on:
             - task_key: evaluate
-          job_cluster_key: gpu_cluster
-          spark_python_task:
-            python_file: jobs/deploy.py
-            parameters:
-              - "--config_path"
-              - "${var.config_path}"
-              - "--model_name"
-              - "${var.catalog}.${var.schema}.${var.model_name}"
-              - "--endpoint_name"
-              - "${var.endpoint_name}"
-          libraries:
-            - requirements: requirements_runtime.txt
+          notebook_task:
+            notebook_path: ./jobs/register.py
+            base_parameters:
+              run_id: "{{tasks.train.values.run_id}}"
+          environment_key: ai_runtime
+          compute:
+            hardware_accelerator: ${var.accelerator}
+          timeout_seconds: 7200
+
+        # Serverless CPU: waiting for an endpoint to warm up needs no GPU.
+        - task_key: deploy
+          depends_on:
+            - task_key: register
+          notebook_task:
+            notebook_path: ./jobs/deploy.py
+            base_parameters:
+              model_version: "{{tasks.register.values.model_version}}"
+          timeout_seconds: 4200
 
     slm_endpoint_monitoring:
-      name: "[${bundle.target}] SLM endpoint monitoring"
+      name: SLM endpoint monitoring
 
       schedule:
         quartz_cron_expression: "0 0 * * * ?"
         timezone_id: UTC
         pause_status: ${var.monitoring_pause_status}
 
+      parameters:
+        - name: config_path
+          default: ${var.config_path}
+        - name: endpoint_name
+          default: ${var.endpoint_name}
+
       tasks:
         - task_key: monitor
-          # Monitoring only queries system tables and the serving API, so it
-          # runs on a small CPU cluster rather than the GPU one.
-          new_cluster:
-            spark_version: "17.3.x-cpu-ml-scala2.12"
-            node_type_id: i3.xlarge
-            num_workers: 0
-            data_security_mode: SINGLE_USER
-            custom_tags:
-              ResourceClass: SingleNode
-            spark_conf:
-              spark.master: "local[*]"
-              spark.databricks.cluster.profile: singleNode
-          spark_python_task:
-            python_file: jobs/monitor.py
-            parameters:
-              - "--endpoint_name"
-              - "${var.endpoint_name}"
-              - "--config_path"
-              - "${var.config_path}"
-              # Exit non-zero on a threshold breach so the job's failure
-              # notification is the alert.
-              - "--fail_on_breach"
+          notebook_task:
+            notebook_path: ./jobs/monitor.py
+            base_parameters:
+              # A breach fails the run, so the job's failure notification is
+              # the alert.
+              fail_on_breach: "true"
 
+# Development mode prefixes job names with "[dev <user>]" on its own; the other
+# targets say which environment they are explicitly.
 targets:
   dev:
     mode: development
     default: true
     variables:
       monitoring_pause_status: PAUSED
-      num_gpus: 1
-      gpu_node_type: g5.xlarge
 
   staging:
     mode: production
+    presets:
+      name_prefix: "[staging] "
     variables:
       monitoring_pause_status: UNPAUSED
       schema: slm_staging
 
   prod:
     mode: production
+    presets:
+      name_prefix: "[prod] "
     variables:
       monitoring_pause_status: UNPAUSED

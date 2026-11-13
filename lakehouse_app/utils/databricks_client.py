@@ -6,9 +6,11 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from databricks.sdk import WorkspaceClient
-from databricks.sdk.service import compute, jobs
 import mlflow
 from mlflow.tracking import MlflowClient
+
+# The job the bundle deploys; its name is prefixed with the target, e.g. "[dev]".
+PIPELINE_JOB_NAME = "SLM fine-tuning pipeline"
 
 
 class DatabricksJobClient:
@@ -18,65 +20,37 @@ class DatabricksJobClient:
         self.workspace_client = WorkspaceClient()
         self.mlflow_client = MlflowClient()
 
-    def create_training_job(
-        self,
-        job_name: str,
-        config_path: str,
-        project_path: str,
-        num_gpus: Optional[int] = None,
-        cluster_config: Optional[Dict[str, Any]] = None,
-        existing_cluster_id: Optional[str] = None,
-    ) -> str:
-        python_params = ["--config_path", config_path]
-        if num_gpus is not None:
-            python_params.extend(["--num_gpus", str(num_gpus)])
+    def list_pipeline_jobs(self) -> List[Dict[str, Any]]:
+        """The fine-tuning pipeline jobs deployed by the bundle, one per target.
 
-        cluster_kwargs = {}
-        if existing_cluster_id:
-            cluster_kwargs["existing_cluster_id"] = existing_cluster_id
-        else:
-            if cluster_config is None:
-                cluster_config = {
-                    "spark_version": "17.3.x-gpu-ml-scala2.13",
-                    "node_type_id": "g5.4xlarge",
-                    "num_workers": 0,
-                    "data_security_mode": "SINGLE_USER",
-                }
-            dsm = cluster_config.pop("data_security_mode", None)
-            if isinstance(dsm, str):
-                dsm = compute.DataSecurityMode(dsm)
-            spec = compute.ClusterSpec(**cluster_config)
-            if dsm is not None:
-                spec.data_security_mode = dsm
-            cluster_kwargs["new_cluster"] = spec
-
-        runtime_libs = [
-            compute.Library(pypi=compute.PythonPyPiLibrary(package="trl>=0.12")),
-            compute.Library(pypi=compute.PythonPyPiLibrary(package="peft>=0.10")),
-            compute.Library(pypi=compute.PythonPyPiLibrary(package="bitsandbytes>=0.43")),
+        Matched by substring: the API's ``name`` filter is exact, and bundle
+        targets prefix the name (development mode adds the user as well).
+        """
+        return [
+            {"job_id": str(job.job_id), "name": job.settings.name}
+            for job in self.workspace_client.jobs.list()
+            if job.settings and PIPELINE_JOB_NAME in (job.settings.name or "")
         ]
 
-        task = jobs.Task(
-            task_key="train_model",
-            description="Fine-tune SLM with TRL",
-            **cluster_kwargs,
-            spark_python_task=jobs.SparkPythonTask(
-                python_file=f"{project_path}/jobs/train.py",
-                parameters=python_params,
-            ),
-            libraries=runtime_libs,
-            timeout_seconds=0,
-        )
+    def run_pipeline(
+        self,
+        job_id: str,
+        config_path: str,
+        model_name: Optional[str] = None,
+        endpoint_name: Optional[str] = None,
+    ) -> str:
+        """Start a pipeline run, overriding its job parameters for this run only.
 
-        created_job = self.workspace_client.jobs.create(
-            name=job_name,
-            tasks=[task],
-            max_concurrent_runs=1,
-        )
-        return str(created_job.job_id)
+        Training runs on AI Runtime inside the deployed job, so the app no
+        longer defines any compute of its own.
+        """
+        params = {"config_path": config_path}
+        if model_name:
+            params["model_name"] = model_name
+        if endpoint_name:
+            params["endpoint_name"] = endpoint_name
 
-    def run_job(self, job_id: str) -> str:
-        run = self.workspace_client.jobs.run_now(job_id=int(job_id))
+        run = self.workspace_client.jobs.run_now(job_id=int(job_id), job_parameters=params)
         return str(run.run_id)
 
     def get_job_status(self, run_id: str) -> Dict[str, Any]:
@@ -162,12 +136,15 @@ class DatabricksJobClient:
         workload_size: str = "Small", workload_type: str = "GPU_SMALL",
         scale_to_zero: bool = True,
     ) -> Dict[str, Any]:
-        from databricks.sdk.service.serving import EndpointCoreConfigInput, ServedEntityInput
+        from databricks.sdk.service.serving import (
+            EndpointCoreConfigInput, ServedEntityInput, ServingModelWorkloadType,
+        )
 
         try:
             served_entity = ServedEntityInput(
                 entity_name=model_name, entity_version=model_version,
-                workload_size=workload_size, workload_type=workload_type,
+                workload_size=workload_size,
+                workload_type=ServingModelWorkloadType(workload_type),
                 scale_to_zero_enabled=scale_to_zero,
             )
             try:
@@ -177,7 +154,7 @@ class DatabricksJobClient:
                 )
                 status = "updated"
             except Exception:
-                config = EndpointCoreConfigInput(served_entities=[served_entity])
+                config = EndpointCoreConfigInput(name=endpoint_name, served_entities=[served_entity])
                 self.workspace_client.serving_endpoints.create(name=endpoint_name, config=config)
                 status = "created"
             return {"endpoint_name": endpoint_name, "status": status, "model_name": model_name}
@@ -214,18 +191,3 @@ class DatabricksJobClient:
             return {"predictions": resp.predictions if hasattr(resp, "predictions") else resp.as_dict()}
         except Exception as e:
             return {"error": str(e)}
-
-    def list_clusters(self) -> List[Dict[str, Any]]:
-        try:
-            clusters = self.workspace_client.clusters.list()
-            return [
-                {
-                    "cluster_id": c.cluster_id,
-                    "cluster_name": c.cluster_name,
-                    "state": str(c.state),
-                    "node_type_id": c.node_type_id,
-                }
-                for c in clusters
-            ]
-        except Exception:
-            return []
